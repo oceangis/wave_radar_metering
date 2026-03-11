@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+venv/
+
+# Logs
+*.log
+mqtt_system/logs/
+
+# Cache
+mqtt_system/cache/
+
+# Data
+*.csv
+
+# IDE
+.vscode/
+.idea/
+
+# Temp
+temp/
+.claude/
