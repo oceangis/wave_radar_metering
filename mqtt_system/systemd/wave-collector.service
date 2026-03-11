@@ -1,0 +1,26 @@
+[Unit]
+Description=Wave Monitoring - Data Collector Service
+After=network.target mosquitto.service
+Wants=mosquitto.service
+PartOf=wave-monitor.target
+
+[Service]
+Type=simple
+User=obsis
+Group=obsis
+WorkingDirectory=/home/obsis/radar/mqtt_system/services
+ExecStart=/home/obsis/radar/mqtt_system/venv/bin/python3 /home/obsis/radar/mqtt_system/services/mqtt_collector.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# 环境变量
+Environment="PYTHONUNBUFFERED=1"
+
+# 资源限制
+MemoryMax=512M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target

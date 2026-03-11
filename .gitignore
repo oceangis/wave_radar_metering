@@ -18,6 +18,9 @@ mqtt_system/cache/
 .vscode/
 .idea/
 
+# Archives
+*.zip
+
 # Temp
 temp/
 .claude/

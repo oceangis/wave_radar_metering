@@ -1,0 +1,781 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>系统配置 - 波浪监测系统</title>
+
+    <!-- CSS -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+</head>
+<body>
+    <div class="container">
+        <h1>⚙️ 系统配置</h1>
+
+        <!-- 导航栏 -->
+        <div class="controls">
+            <a href="/" class="btn btn-secondary">← 返回首页</a>
+            <a href="/history" class="btn btn-primary">历史数据</a>
+            <a href="/spectrum" class="btn btn-primary">频谱分析</a>
+        </div>
+
+        <!-- 当前配置显示 -->
+        <div class="card">
+            <div class="card-header">📌 当前系统配置</div>
+            <div class="param-list">
+                <div class="param-item">
+                    <span class="param-label">采样频率 (Hz)</span>
+                    <span class="param-value" id="currentSampleRate">6.0 Hz</span>
+                </div>
+                <div class="param-item">
+                    <span class="param-label">分析窗口 (秒)</span>
+                    <span class="param-value" id="currentWindowDuration">1200 s</span>
+                </div>
+                <div class="param-item">
+                    <span class="param-label">分析间隔 (秒)</span>
+                    <span class="param-value" id="currentAnalysisInterval">300 s</span>
+                </div>
+                <div class="param-item">
+                    <span class="param-label">滤波器状态</span>
+                    <span class="param-value" id="currentFilterEnable">已启用</span>
+                </div>
+                <div class="param-item">
+                    <span class="param-label">滤波频带 (Hz)</span>
+                    <span class="param-value" id="currentFilterBand">0.04 - 1.0 Hz</span>
+                </div>
+                <div class="param-item">
+                    <span class="param-label">潮位分析时长 (秒)</span>
+                    <span class="param-value" id="currentTideWindowDuration">300 s</span>
+                </div>
+                <div class="param-item">
+                    <span class="param-label">数据重叠度</span>
+                    <span class="param-value" id="currentOverlap">88.3%</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 采集参数配置 -->
+        <div class="card">
+            <div class="card-header">采集参数配置</div>
+            <div class="card-body">
+                <div class="form-group">
+                    <label class="form-label">采样频率 (Hz)</label>
+                    <input type="number" id="sampleRate" class="form-control"
+                           min="2" max="8" step="0.1" value="6.0">
+                    <span class="form-help">雷达连续采集频率，当前: 6 Hz（每秒6次）</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- 雷达阵列配置 -->
+        <div class="card">
+            <div class="card-header">🧭 雷达阵列配置</div>
+            <div class="card-body">
+                <div class="form-group">
+                    <label class="form-label">阵列朝向角 (°)</label>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <input type="number" id="arrayHeading" class="form-control"
+                               step="0.1" min="0" max="360" style="flex: 1;">
+                        <span style="font-size: 12px; color: #666;">
+                            当前: <span id="currentArrayHeading">--</span>°
+                        </span>
+                    </div>
+                    <span class="form-help">局部y轴相对正北的顺时针角度，用于将相对波向转换为地理波向</span>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">阵列高度 (m)</label>
+                    <div style="display: flex; gap: 10px; align-items: center;">
+                        <input type="number" id="arrayHeight" class="form-control"
+                               step="0.01" min="0" max="100" style="flex: 1;">
+                        <span style="font-size: 12px; color: #666;">
+                            当前: <span id="currentArrayHeight">--</span>m
+                        </span>
+                    </div>
+                    <span class="form-help">雷达阵列相对基准面的高度，用于计算潮位（潮位 = 高度 - 测距）</span>
+                </div>
+                <div style="text-align: right; margin-top: 15px;">
+                    <button class="btn btn-primary" onclick="updateArrayConfig()">💾 保存阵列配置</button>
+                </div>
+                <div id="arrayConfigStatus" style="margin-top: 10px; font-size: 14px; text-align: center;"></div>
+            </div>
+        </div>
+
+        <!-- 分析参数配置 -->
+        <div class="card">
+            <div class="card-header">📊 波浪和潮位分析参数配置</div>
+            <div class="card-body">
+                <!-- 计量模式窗口时长 -->
+                <div class="form-group">
+                    <label class="form-label"><strong>计量模式窗口时长 (METER)</strong></label>
+                    <div style="display: flex; gap: 15px; flex-wrap: wrap; margin-top: 10px;">
+                        <label class="radio-card" style="display: flex; align-items: center; padding: 10px 15px; border: 2px solid #ddd; border-radius: 8px; cursor: pointer; min-width: 150px;">
+                            <input type="radio" name="meterWindow" value="300" style="margin-right: 10px;">
+                            <div>
+                                <div class="radio-card-title" style="font-weight: bold;">5分钟</div>
+                                <div style="font-size: 12px; color: #666;">默认 (300秒)</div>
+                            </div>
+                        </label>
+                        <label class="radio-card" style="display: flex; align-items: center; padding: 10px 15px; border: 2px solid #ddd; border-radius: 8px; cursor: pointer; min-width: 150px;">
+                            <input type="radio" name="meterWindow" value="600" style="margin-right: 10px;">
+                            <div>
+                                <div class="radio-card-title" style="font-weight: bold;">10分钟</div>
+                                <div style="font-size: 12px; color: #666;">(600秒)</div>
+                            </div>
+                        </label>
+                        <label class="radio-card" style="display: flex; align-items: center; padding: 10px 15px; border: 2px solid #ddd; border-radius: 8px; cursor: pointer; min-width: 150px;">
+                            <input type="radio" name="meterWindow" value="1200" style="margin-right: 10px;">
+                            <div>
+                                <div class="radio-card-title" style="font-weight: bold;">20分钟</div>
+                                <div style="font-size: 12px; color: #666;">(1200秒)</div>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- 工作模式窗口时长 -->
+                <div class="form-group" style="margin-top: 20px;">
+                    <label class="form-label"><strong>工作模式窗口时长 (WORK)</strong></label>
+                    <div style="display: flex; gap: 15px; flex-wrap: wrap; margin-top: 10px;">
+                        <label class="radio-card" style="display: flex; align-items: center; padding: 10px 15px; border: 2px solid #ddd; border-radius: 8px; cursor: pointer; min-width: 150px;">
+                            <input type="radio" name="workWindow" value="600" style="margin-right: 10px;">
+                            <div>
+                                <div class="radio-card-title" style="font-weight: bold;">10分钟</div>
+                                <div style="font-size: 12px; color: #666;">(600秒)</div>
+                            </div>
+                        </label>
+                        <label class="radio-card" style="display: flex; align-items: center; padding: 10px 15px; border: 2px solid #ddd; border-radius: 8px; cursor: pointer; min-width: 150px;">
+                            <input type="radio" name="workWindow" value="1200" style="margin-right: 10px;">
+                            <div>
+                                <div class="radio-card-title" style="font-weight: bold;">20分钟</div>
+                                <div style="font-size: 12px; color: #666;">默认 (1200秒)</div>
+                            </div>
+                        </label>
+                        <label class="radio-card" style="display: flex; align-items: center; padding: 10px 15px; border: 2px solid #ddd; border-radius: 8px; cursor: pointer; min-width: 150px;">
+                            <input type="radio" name="workWindow" value="1800" style="margin-right: 10px;">
+                            <div>
+                                <div class="radio-card-title" style="font-weight: bold;">30分钟</div>
+                                <div style="font-size: 12px; color: #666;">(1800秒)</div>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- 窗口时长选择（自动分析） -->
+                <div class="form-group" style="margin-top: 20px;">
+                    <label class="form-label"><strong>自动分析窗口时长</strong></label>
+                    <div style="display: flex; gap: 15px; flex-wrap: wrap; margin-top: 10px;">
+                        <label class="radio-card" style="display: flex; align-items: center; padding: 10px 15px; border: 2px solid #ddd; border-radius: 8px; cursor: pointer; min-width: 150px;">
+                            <input type="radio" name="windowDuration" value="300" style="margin-right: 10px;">
+                            <div>
+                                <div class="radio-card-title" style="font-weight: bold;">5分钟</div>
+                                <div style="font-size: 12px; color: #666;">快速测试 (300秒)</div>
+                            </div>
+                        </label>
+                        <label class="radio-card" style="display: flex; align-items: center; padding: 10px 15px; border: 2px solid #ddd; border-radius: 8px; cursor: pointer; min-width: 150px;">
+                            <input type="radio" name="windowDuration" value="600" style="margin-right: 10px;">
+                            <div>
+                                <div class="radio-card-title" style="font-weight: bold;">10分钟</div>
+                                <div style="font-size: 12px; color: #666;">中等测试 (600秒)</div>
+                            </div>
+                        </label>
+                        <label class="radio-card" style="display: flex; align-items: center; padding: 10px 15px; border: 2px solid #ddd; border-radius: 8px; cursor: pointer; min-width: 150px;">
+                            <input type="radio" name="windowDuration" value="1200" style="margin-right: 10px;">
+                            <div>
+                                <div class="radio-card-title" style="font-weight: bold;">20分钟</div>
+                                <div style="font-size: 12px; color: #666;">RADAC标准 (1200秒)</div>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- 分析间隔选择（滑动窗口） -->
+                <div class="form-group" style="margin-top: 20px;">
+                    <label class="form-label"><strong>滑动窗口间隔 (更新频率)</strong></label>
+                    <div style="display: flex; gap: 15px; flex-wrap: wrap; margin-top: 10px;">
+                        <label class="radio-card" style="display: flex; align-items: center; padding: 10px 15px; border: 2px solid #ddd; border-radius: 8px; cursor: pointer; min-width: 140px;">
+                            <input type="radio" name="analysisInterval" value="300" style="margin-right: 10px;">
+                            <div>
+                                <div class="radio-card-title" style="font-weight: bold;">5分钟</div>
+                                <div style="font-size: 12px; color: #666;">标准间隔 (300秒)</div>
+                            </div>
+                        </label>
+                        <label class="radio-card" style="display: flex; align-items: center; padding: 10px 15px; border: 2px solid #ddd; border-radius: 8px; cursor: pointer; min-width: 140px;">
+                            <input type="radio" name="analysisInterval" value="600" style="margin-right: 10px;">
+                            <div>
+                                <div class="radio-card-title" style="font-weight: bold;">10分钟</div>
+                                <div style="font-size: 12px; color: #666;">(600秒)</div>
+                            </div>
+                        </label>
+                        <label class="radio-card" style="display: flex; align-items: center; padding: 10px 15px; border: 2px solid #ddd; border-radius: 8px; cursor: pointer; min-width: 140px;">
+                            <input type="radio" name="analysisInterval" value="1200" style="margin-right: 10px;">
+                            <div>
+                                <div class="radio-card-title" style="font-weight: bold;">20分钟</div>
+                                <div style="font-size: 12px; color: #666;">(1200秒)</div>
+                            </div>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- 潮位分析时长选择 -->
+                <div class="form-group" style="margin-top: 20px;">
+                    <label class="form-label"><strong>潮位分析时长</strong></label>
+                    <div style="display: flex; gap: 15px; flex-wrap: wrap; margin-top: 10px;">
+                        <label class="radio-card" style="display: flex; align-items: center; padding: 10px 15px; border: 2px solid #ddd; border-radius: 8px; cursor: pointer; min-width: 150px;">
+                            <input type="radio" name="tideWindowDuration" value="300" style="margin-right: 10px;">
+                            <div>
+                                <div class="radio-card-title" style="font-weight: bold;">5分钟</div>
+                                <div style="font-size: 12px; color: #666;">默认 (300秒)</div>
+                            </div>
+                        </label>
+                        <label class="radio-card" style="display: flex; align-items: center; padding: 10px 15px; border: 2px solid #ddd; border-radius: 8px; cursor: pointer; min-width: 150px;">
+                            <input type="radio" name="tideWindowDuration" value="600" style="margin-right: 10px;">
+                            <div>
+                                <div class="radio-card-title" style="font-weight: bold;">10分钟</div>
+                                <div style="font-size: 12px; color: #666;">更平滑 (600秒)</div>
+                            </div>
+                        </label>
+                    </div>
+                    <span class="form-help">潮位观测的滑动窗口时长，窗口内取均值消除波浪分量。滑动间隔与波浪分析共用同一个值。</span>
+                </div>
+
+                <!-- 配置预览 -->
+                <div style="margin-top: 25px; padding: 15px; background-color: #f8f9fa; border-radius: 8px; border-left: 4px solid #3498db;">
+                    <h4 style="margin: 0 0 10px 0; color: #2c3e50;">📋 配置预览</h4>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px;">
+                        <div>
+                            <span style="color: #7f8c8d; font-size: 14px;">采样点数:</span>
+                            <strong id="previewSampleCount" style="margin-left: 10px; color: #2c3e50;">4,096 点</strong>
+                        </div>
+                        <div>
+                            <span style="color: #7f8c8d; font-size: 14px;">数据重叠度:</span>
+                            <strong id="previewOverlap" style="margin-left: 10px; color: #2c3e50;">88.3%</strong>
+                        </div>
+                        <div>
+                            <span style="color: #7f8c8d; font-size: 14px;">频率分辨率:</span>
+                            <strong id="previewFreqRes" style="margin-left: 10px; color: #2c3e50;">0.00098 Hz</strong>
+                        </div>
+                        <div>
+                            <span style="color: #7f8c8d; font-size: 14px;">首次分析等待:</span>
+                            <strong id="previewWaitTime" style="margin-left: 10px; color: #2c3e50;">17.1 分钟</strong>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 其他参数 -->
+                <div class="grid grid-2" style="margin-top: 20px;">
+                    <div class="form-group">
+                        <label class="form-label">FFT窗口长度</label>
+                        <input type="number" id="nperseg" class="form-control"
+                               min="64" max="2400" step="64" value="1200">
+                        <span class="form-help">频谱分析窗口点数，RADAC标准: 1200</span>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">最小有效样本数</label>
+                        <input type="number" id="minSamples" class="form-control"
+                               min="10" max="1000" step="10" value="100">
+                        <span class="form-help">进行分析所需的最小样本数</span>
+                    </div>
+                </div>
+
+                <!-- 滤波器配置 -->
+                <div class="form-group" style="margin-top: 20px;">
+                    <label class="form-label">
+                        <input type="checkbox" id="filterEnable" checked style="margin-right: 10px;">
+                        启用带通滤波器
+                    </label>
+                </div>
+
+                <div id="filterSettings" class="grid grid-2">
+                    <div class="form-group">
+                        <label class="form-label">低频截止 (Hz)</label>
+                        <input type="number" id="filterLow" class="form-control"
+                               min="0.01" max="1.0" step="0.01" value="0.04">
+                        <span class="form-help">对应最大周期: 25秒</span>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">高频截止 (Hz)</label>
+                        <input type="number" id="filterHigh" class="form-control"
+                               min="0.1" max="2.0" step="0.01" value="1.0">
+                        <span class="form-help">对应最小周期: 1秒</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 质量控制参数 -->
+        <div class="card">
+            <div class="card-header">数据质量控制</div>
+            <div class="card-body">
+                <div class="grid grid-2">
+                    <div class="form-group">
+                        <label class="form-label">有效高度范围 - 最小 (m)</label>
+                        <input type="number" id="validRangeMin" class="form-control"
+                               min="-10" max="10" step="0.1" value="0.0">
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">有效高度范围 - 最大 (m)</label>
+                        <input type="number" id="validRangeMax" class="form-control"
+                               min="0" max="20" step="0.1" value="10.0">
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">最大变化率 (m/s)</label>
+                        <input type="number" id="maxRateOfChange" class="form-control"
+                               min="0.1" max="10.0" step="0.1" value="1.0">
+                        <span class="form-help">用于检测异常跳变</span>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">平坦线容差 (m)</label>
+                        <input type="number" id="flatLineTolerance" class="form-control"
+                               min="0.0001" max="0.1" step="0.001" value="0.001">
+                        <span class="form-help">用于检测设备失效</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 操作按钮 -->
+        <div class="controls">
+            <button class="btn btn-primary" onclick="loadConfig()">🔄 加载当前配置</button>
+            <button class="btn btn-success" onclick="saveConfig()">💾 保存配置</button>
+            <button class="btn btn-warning" onclick="resetConfig()">↩ 恢复默认</button>
+            <button class="btn btn-secondary" onclick="validateConfig()">✓ 验证配置</button>
+        </div>
+
+        <!-- 配置说明 -->
+        <div class="card">
+            <div class="card-header">配置说明</div>
+            <div class="card-body">
+                <h3>采样频率建议</h3>
+                <p>根据Nyquist采样定理，采样频率应至少为信号最高频率的2倍。对于海浪监测:</p>
+                <ul>
+                    <li><strong>4 Hz</strong>: 可捕获周期 > 0.5秒的波浪，平衡精度和性能</li>
+                    <li><strong>6 Hz</strong> (当前): 标准配置，可捕获周期 > 0.33秒的波浪</li>
+                    <li><strong>8 Hz</strong>: 高精度采样，适用于研究用途</li>
+                </ul>
+
+                <h3 style="margin-top: 20px;">分析窗口时长</h3>
+                <p>较长的窗口提供更好的低频分辨率:</p>
+                <ul>
+                    <li><strong>300秒 (5分钟)</strong>: 快速响应</li>
+                    <li><strong>600秒 (10分钟)</strong>: 中等配置</li>
+                    <li><strong>1200秒 (20分钟)</strong> (RADAC标准): 更好的长周期波浪分析</li>
+                </ul>
+
+                <h3 style="margin-top: 20px;">滤波器频带</h3>
+                <p>去除非波浪信号和噪声:</p>
+                <ul>
+                    <li><strong>低频截止 0.04 Hz</strong>: 过滤周期 > 25秒的信号（潮汐等）</li>
+                    <li><strong>高频截止 1.0 Hz</strong>: 过滤周期 < 1秒的信号（噪声等）</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <!-- JavaScript -->
+    <script src="{{ url_for('static', filename='js/utils.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/api.js') }}"></script>
+
+    <script>
+        // 更新 radio-card 高亮状态
+        function updateRadioHighlight(groupName) {
+            document.querySelectorAll(`input[name="${groupName}"]`).forEach(radio => {
+                const label = radio.closest('.radio-card');
+                const title = label.querySelector('.radio-card-title');
+                if (radio.checked) {
+                    label.style.borderColor = '#3498db';
+                    label.style.backgroundColor = '#e3f2fd';
+                    title.style.color = '#2980b9';
+                } else {
+                    label.style.borderColor = '#ddd';
+                    label.style.backgroundColor = '';
+                    title.style.color = '';
+                }
+            });
+        }
+
+        // 页面加载时获取当前配置
+        window.addEventListener('DOMContentLoaded', () => {
+            console.log('[Config] Page loaded');
+            loadConfig();
+
+            // 滤波器开关事件
+            document.getElementById('filterEnable').addEventListener('change', (e) => {
+                const filterSettings = document.getElementById('filterSettings');
+                filterSettings.style.display = e.target.checked ? 'grid' : 'none';
+            });
+
+            // 分析参数变化时更新预览和高亮
+            document.querySelectorAll('input[name="windowDuration"]').forEach(radio => {
+                radio.addEventListener('change', () => {
+                    updateRadioHighlight('windowDuration');
+                    updatePreview();
+                });
+            });
+            document.querySelectorAll('input[name="analysisInterval"]').forEach(radio => {
+                radio.addEventListener('change', () => {
+                    updateRadioHighlight('analysisInterval');
+                    updatePreview();
+                });
+            });
+            document.querySelectorAll('input[name="tideWindowDuration"]').forEach(radio => {
+                radio.addEventListener('change', () => {
+                    updateRadioHighlight('tideWindowDuration');
+                });
+            });
+            document.querySelectorAll('input[name="meterWindow"]').forEach(radio => {
+                radio.addEventListener('change', () => updateRadioHighlight('meterWindow'));
+            });
+            document.querySelectorAll('input[name="workWindow"]').forEach(radio => {
+                radio.addEventListener('change', () => updateRadioHighlight('workWindow'));
+            });
+
+            // 采样率变化时更新预览
+            document.getElementById('sampleRate').addEventListener('input', updatePreview);
+
+            // 初始化预览和高亮
+            updateRadioHighlight('windowDuration');
+            updateRadioHighlight('analysisInterval');
+            updateRadioHighlight('tideWindowDuration');
+            updateRadioHighlight('meterWindow');
+            updateRadioHighlight('workWindow');
+            updatePreview();
+        });
+
+        // 更新配置预览
+        function updatePreview() {
+            const windowRadio = document.querySelector('input[name="windowDuration"]:checked');
+            const intervalRadio = document.querySelector('input[name="analysisInterval"]:checked');
+            if (!windowRadio || !intervalRadio) return;
+            const windowDuration = parseInt(windowRadio.value);
+            const analysisInterval = parseInt(intervalRadio.value);
+            const sampleRate = parseFloat(document.getElementById('sampleRate').value) || 6.0;
+
+            // 计算预览值
+            const sampleCount = windowDuration * sampleRate;
+            const overlap = ((windowDuration - analysisInterval) / windowDuration * 100).toFixed(1);
+            const freqRes = (1 / windowDuration).toFixed(5);
+            const waitTime = (windowDuration / 60).toFixed(1);
+
+            // 更新显示
+            document.getElementById('previewSampleCount').textContent = sampleCount.toLocaleString() + ' 点';
+            document.getElementById('previewOverlap').textContent = overlap + '%';
+            document.getElementById('previewFreqRes').textContent = freqRes + ' Hz';
+            document.getElementById('previewWaitTime').textContent = waitTime + ' 分钟';
+        }
+
+        // 加载当前配置
+        async function loadConfig() {
+            try {
+                const response = await api.getConfig();
+
+                if (response.success) {
+                    const config = response.config;
+
+                    // 计算并显示当前配置
+                    const windowDuration = config.window_duration || 1200;
+                    const analysisInterval = config.analysis_interval || 300;
+                    const overlap = ((windowDuration - analysisInterval) / windowDuration * 100).toFixed(1);
+
+                    document.getElementById('currentSampleRate').textContent =
+                        (config.sample_rate || 6.0) + ' Hz';
+                    document.getElementById('currentWindowDuration').textContent =
+                        windowDuration + ' s';
+                    document.getElementById('currentAnalysisInterval').textContent =
+                        analysisInterval + ' s';
+                    document.getElementById('currentOverlap').textContent =
+                        overlap + '%';
+                    document.getElementById('currentTideWindowDuration').textContent =
+                        (config.tide_window_duration || 300) + ' s';
+                    document.getElementById('currentFilterEnable').textContent =
+                        config.filter_enable ? '已启用' : '已禁用';
+                    document.getElementById('currentFilterBand').textContent =
+                        config.filter_band ? config.filter_band.join(' - ') + ' Hz' : '0.04 - 1.0 Hz';
+
+                    // 填充表单
+                    if (config.sample_rate) {
+                        document.getElementById('sampleRate').value = config.sample_rate;
+                    }
+
+                    // 设置窗口时长单选按钮
+                    if (config.window_duration) {
+                        const windowRadio = document.querySelector(`input[name="windowDuration"][value="${config.window_duration}"]`);
+                        if (windowRadio) {
+                            windowRadio.checked = true;
+                        }
+                    }
+
+                    // 设置分析间隔单选按钮
+                    if (config.analysis_interval) {
+                        const intervalRadio = document.querySelector(`input[name="analysisInterval"][value="${config.analysis_interval}"]`);
+                        if (intervalRadio) {
+                            intervalRadio.checked = true;
+                        }
+                    }
+
+                    // 设置潮位分析时长单选按钮
+                    const tideWindowVal = config.tide_window_duration || 300;
+                    const tideRadio = document.querySelector(`input[name="tideWindowDuration"][value="${tideWindowVal}"]`);
+                    if (tideRadio) {
+                        tideRadio.checked = true;
+                    }
+
+                    // 设置计量模式窗口单选按钮
+                    const meterRadio = document.querySelector(`input[name="meterWindow"][value="${config.meter_window || 300}"]`);
+                    if (meterRadio) meterRadio.checked = true;
+
+                    // 设置工作模式窗口单选按钮
+                    const workRadio = document.querySelector(`input[name="workWindow"][value="${config.work_window || 1200}"]`);
+                    if (workRadio) workRadio.checked = true;
+
+                    if (config.filter_enable !== undefined) {
+                        document.getElementById('filterEnable').checked = config.filter_enable;
+                    }
+                    if (config.filter_band && config.filter_band.length === 2) {
+                        document.getElementById('filterLow').value = config.filter_band[0];
+                        document.getElementById('filterHigh').value = config.filter_band[1];
+                    }
+
+                    // 更新高亮和预览
+                    updateRadioHighlight('windowDuration');
+                    updateRadioHighlight('analysisInterval');
+                    updateRadioHighlight('tideWindowDuration');
+                    updateRadioHighlight('meterWindow');
+                    updateRadioHighlight('workWindow');
+                    updatePreview();
+
+                    Utils.showToast('配置加载成功', 'success');
+                } else {
+                    Utils.showToast('加载配置失败', 'error');
+                }
+            } catch (error) {
+                console.error('[Config] Load error:', error);
+                Utils.showToast('加载配置失败: ' + error.message, 'error');
+            }
+        }
+
+        // 保存配置
+        async function saveConfig() {
+            if (!validateConfig()) {
+                return;
+            }
+
+            // 从单选按钮获取值
+            const windowDuration = parseInt(document.querySelector('input[name="windowDuration"]:checked').value);
+            const analysisInterval = parseInt(document.querySelector('input[name="analysisInterval"]:checked').value);
+            const tideWindowDuration = parseInt(document.querySelector('input[name="tideWindowDuration"]:checked').value);
+            const meterWindow = parseInt(document.querySelector('input[name="meterWindow"]:checked').value);
+            const workWindow = parseInt(document.querySelector('input[name="workWindow"]:checked').value);
+
+            const config = {
+                sample_rate: parseFloat(document.getElementById('sampleRate').value),
+                window_duration: windowDuration,
+                analysis_interval: analysisInterval,
+                tide_window_duration: tideWindowDuration,
+                meter_window: meterWindow,
+                work_window: workWindow,
+                filter_enable: document.getElementById('filterEnable').checked,
+                filter_band: [
+                    parseFloat(document.getElementById('filterLow').value),
+                    parseFloat(document.getElementById('filterHigh').value)
+                ],
+            };
+
+            try {
+                const response = await api.updateConfig(config);
+
+                if (response.success) {
+                    Utils.showToast('配置保存成功，将通过MQTT发布到各服务', 'success');
+                    setTimeout(() => loadConfig(), 1000);
+                } else {
+                    Utils.showToast('保存配置失败: ' + (response.error || '未知错误'), 'error');
+                }
+            } catch (error) {
+                console.error('[Config] Save error:', error);
+                Utils.showToast('保存配置失败: ' + error.message, 'error');
+            }
+        }
+
+        // 验证配置
+        function validateConfig() {
+            const sampleRate = parseFloat(document.getElementById('sampleRate').value);
+            const filterLow = parseFloat(document.getElementById('filterLow').value);
+            const filterHigh = parseFloat(document.getElementById('filterHigh').value);
+
+            // 采样率验证
+            if (isNaN(sampleRate) || sampleRate < 2 || sampleRate > 8) {
+                Utils.showToast('采样频率必须在 2-8 Hz 之间', 'error');
+                return false;
+            }
+
+            // 窗口时长和间隔验证（从单选按钮获取）
+            const windowDuration = parseInt(document.querySelector('input[name="windowDuration"]:checked').value);
+            const analysisInterval = parseInt(document.querySelector('input[name="analysisInterval"]:checked').value);
+
+            if (analysisInterval > windowDuration) {
+                Utils.showToast('分析间隔不能大于窗口时长', 'error');
+                return false;
+            }
+
+            // 潮位分析时长验证
+            const tideWindowDuration = parseInt(document.querySelector('input[name="tideWindowDuration"]:checked').value);
+            if (tideWindowDuration > windowDuration) {
+                Utils.showToast('潮位分析时长不能大于波浪窗口时长', 'error');
+                return false;
+            }
+
+            // 滤波器验证
+            if (document.getElementById('filterEnable').checked) {
+                if (isNaN(filterLow) || isNaN(filterHigh)) {
+                    Utils.showToast('滤波器频率必须为有效数字', 'error');
+                    return false;
+                }
+
+                if (filterLow >= filterHigh) {
+                    Utils.showToast('低频截止必须小于高频截止', 'error');
+                    return false;
+                }
+
+                if (filterLow < 0.01 || filterHigh > 2.0) {
+                    Utils.showToast('滤波器频率范围应在 0.01-2.0 Hz 之间', 'warning');
+                }
+            }
+
+            Utils.showToast('配置验证通过', 'success');
+            return true;
+        }
+
+        // 恢复默认配置
+        function resetConfig() {
+            if (!confirm('确定要恢复默认配置吗？')) {
+                return;
+            }
+
+            // 恢复默认值
+            document.getElementById('sampleRate').value = 6.0;
+
+            // 设置默认单选按钮 - RADAC标准
+            document.querySelector('input[name="windowDuration"][value="1200"]').checked = true;
+            document.querySelector('input[name="analysisInterval"][value="300"]').checked = true;
+            document.querySelector('input[name="tideWindowDuration"][value="300"]').checked = true;
+            document.querySelector('input[name="meterWindow"][value="300"]').checked = true;
+            document.querySelector('input[name="workWindow"][value="1200"]').checked = true;
+
+            document.getElementById('nperseg').value = 1200;
+            document.getElementById('minSamples').value = 100;
+            document.getElementById('filterEnable').checked = true;
+            document.getElementById('filterLow').value = 0.04;
+            document.getElementById('filterHigh').value = 1.0;
+            document.getElementById('validRangeMin').value = 0.0;
+            document.getElementById('validRangeMax').value = 10.0;
+            document.getElementById('maxRateOfChange').value = 1.0;
+            document.getElementById('flatLineTolerance').value = 0.001;
+
+            // 更新高亮和预览
+            updateRadioHighlight('windowDuration');
+            updateRadioHighlight('analysisInterval');
+            updateRadioHighlight('tideWindowDuration');
+            updateRadioHighlight('meterWindow');
+            updateRadioHighlight('workWindow');
+            updatePreview();
+
+            Utils.showToast('已恢复默认配置', 'info');
+        }
+
+        // ==================== 阵列配置管理 ====================
+        async function loadArrayConfig() {
+            try {
+                const response = await fetch('/api/config');
+                const data = await response.json();
+
+                const arrayHeading = data.radar?.array_heading ?? 0;
+                const arrayHeight = data.radar?.array_height ?? 5;
+
+                // 更新显示
+                const currentHeading = document.getElementById('currentArrayHeading');
+                const currentHeight = document.getElementById('currentArrayHeight');
+                if (currentHeading) currentHeading.textContent = arrayHeading.toFixed(1);
+                if (currentHeight) currentHeight.textContent = arrayHeight.toFixed(2);
+
+                // 更新输入框
+                const headingInput = document.getElementById('arrayHeading');
+                const heightInput = document.getElementById('arrayHeight');
+                if (headingInput) headingInput.value = arrayHeading.toFixed(1);
+                if (heightInput) heightInput.value = arrayHeight.toFixed(2);
+            } catch (error) {
+                console.error('加载阵列配置失败:', error);
+            }
+        }
+
+        async function updateArrayConfig() {
+            const heading = parseFloat(document.getElementById('arrayHeading').value);
+            const height = parseFloat(document.getElementById('arrayHeight').value);
+
+            // 验证输入
+            if (isNaN(heading) || heading < 0 || heading > 360) {
+                showArrayConfigStatus('❌ 阵列朝向角必须在0-360度之间', 'error');
+                return;
+            }
+            if (isNaN(height) || height < 0 || height > 100) {
+                showArrayConfigStatus('❌ 阵列高度必须在0-100米之间', 'error');
+                return;
+            }
+
+            try {
+                const payload = {
+                    analysis: {
+                        array_heading: heading,
+                        array_height: height
+                    }
+                };
+
+                const response = await fetch('/api/config/update', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                if (response.ok) {
+                    showArrayConfigStatus('✅ 配置已更新！重启analyzer服务后生效', 'success');
+                    // 更新当前显示
+                    document.getElementById('currentArrayHeading').textContent = heading.toFixed(1);
+                    document.getElementById('currentArrayHeight').textContent = height.toFixed(2);
+
+                    // 3秒后自动加载最新配置
+                    setTimeout(loadArrayConfig, 3000);
+                } else {
+                    const error = await response.json();
+                    showArrayConfigStatus('❌ 更新失败: ' + (error.message || '未知错误'), 'error');
+                }
+            } catch (error) {
+                console.error('更新配置失败:', error);
+                showArrayConfigStatus('❌ 网络错误，请稍后重试', 'error');
+            }
+        }
+
+        function showArrayConfigStatus(message, type) {
+            const statusDiv = document.getElementById('arrayConfigStatus');
+            statusDiv.textContent = message;
+            statusDiv.style.color = type === 'success' ? '#28a745' : '#dc3545';
+            statusDiv.style.fontWeight = '600';
+
+            // 5秒后清除消息
+            setTimeout(() => {
+                statusDiv.textContent = '';
+            }, 5000);
+        }
+
+        // 页面加载时加载阵列配置
+        window.addEventListener('DOMContentLoaded', () => {
+            loadArrayConfig();
+        });
+    </script>
+</body>
+</html>

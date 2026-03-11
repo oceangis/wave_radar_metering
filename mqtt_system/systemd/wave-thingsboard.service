@@ -1,0 +1,19 @@
+[Unit]
+Description=Wave Monitoring - ThingsBoard Bridge Service
+After=network.target mosquitto.service wave-analyzer.service
+Wants=wave-analyzer.service
+PartOf=wave-monitor.target
+
+[Service]
+Type=simple
+User=obsis
+Group=obsis
+WorkingDirectory=/home/obsis/radar/mqtt_system
+ExecStart=/home/obsis/radar/mqtt_system/venv/bin/python3 /home/obsis/radar/mqtt_system/services/thingsboard_bridge.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

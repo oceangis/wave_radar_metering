@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>历史数据查询 - 波浪监测系统</title>
+
+    <!-- CSS -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/charts.css') }}">
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>📊 历史数据查询</h1>
+
+        <!-- 导航栏 -->
+        <div class="controls">
+            <a href="/" class="btn btn-secondary">← 返回首页</a>
+            <a href="/spectrum" class="btn btn-primary">频谱分析</a>
+            <a href="/config" class="btn btn-secondary">系统配置</a>
+        </div>
+
+        <!-- 查询面板 -->
+        <div class="card">
+            <div class="card-header">查询条件</div>
+            <div class="card-body">
+                <div class="grid grid-2">
+                    <!-- 数据类型选择 -->
+                    <div class="form-group">
+                        <label class="form-label">数据类型</label>
+                        <select id="dataType" class="form-control">
+                            <option value="analysis">波浪分析结果</option>
+                            <option value="raw">原始雷达数据</option>
+                        </select>
+                    </div>
+
+                    <!-- 时间范围 -->
+                    <div class="form-group">
+                        <label class="form-label">时间范围</label>
+                        <select id="timeRange" class="form-control" onchange="updateTimeInputs()">
+                            <option value="1h">最近1小时</option>
+                            <option value="6h">最近6小时</option>
+                            <option value="24h">最近24小时</option>
+                            <option value="7d">最近7天</option>
+                            <option value="30d">最近30天</option>
+                            <option value="custom">自定义</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- 自定义时间范围 -->
+                <div id="customTimeInputs" class="grid grid-2" style="display: none; margin-top: 15px;">
+                    <div class="form-group">
+                        <label class="form-label">开始时间</label>
+                        <input type="datetime-local" id="startTime" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">结束时间</label>
+                        <input type="datetime-local" id="endTime" class="form-control">
+                    </div>
+                </div>
+
+                <!-- 查询和导出按钮 -->
+                <div class="controls" style="margin-top: 20px;">
+                    <button class="btn btn-primary" onclick="queryData()">🔍 查询数据</button>
+                    <button class="btn btn-success" onclick="exportCSV()">📥 导出CSV</button>
+                    <button class="btn btn-success" onclick="exportJSON()">📥 导出JSON</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 数据统计 -->
+        <div class="card" id="statsCard" style="display: none;">
+            <div class="card-header">数据统计</div>
+            <div class="stat-grid">
+                <div class="stat-card">
+                    <div class="stat-label">数据记录数</div>
+                    <div class="stat-value" id="recordCount">--</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">平均波高 (m)</div>
+                    <div class="stat-value" id="avgHs">--</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">最大波高 (m)</div>
+                    <div class="stat-value" id="maxHs">--</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">平均周期 (s)</div>
+                    <div class="stat-value" id="avgTp">--</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 趋势图表 -->
+        <div class="chart-card" id="chartCard" style="display: none;">
+            <div class="chart-card-header">
+                <div class="chart-card-title">波浪参数趋势</div>
+            </div>
+            <div class="chart-wrapper chart-lg">
+                <canvas id="trendChart"></canvas>
+            </div>
+        </div>
+
+        <!-- 数据表格 -->
+        <div class="card" id="tableCard" style="display: none;">
+            <div class="card-header">数据详情</div>
+            <div style="overflow-x: auto;">
+                <table class="data-table" id="dataTable">
+                    <thead id="tableHeader"></thead>
+                    <tbody id="tableBody"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- 加载状态 -->
+        <div id="loadingOverlay" class="loading-overlay" style="display: none;">
+            <div class="loading-spinner"></div>
+        </div>
+    </div>
+
+    <!-- JavaScript -->
+    <script src="{{ url_for('static', filename='js/utils.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/api.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
+
+    <script>
+        let currentData = [];
+        let trendChart = null;
+
+        // 页面初始化
+        window.addEventListener('DOMContentLoaded', () => {
+            console.log('[History] Page loaded');
+
+            // 设置默认结束时间为当前时间
+            const now = new Date();
+            document.getElementById('endTime').value = formatDateTimeLocal(now);
+
+            // 设置默认开始时间为24小时前
+            const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+            document.getElementById('startTime').value = formatDateTimeLocal(yesterday);
+
+            // 初始化图表
+            initTrendChart();
+        });
+
+        // 初始化趋势图
+        function initTrendChart() {
+            trendChart = chartManager.createTrendChart('trendChart', {
+                title: '有效波高历史趋势',
+                parameter: 'hs',
+                label: '有效波高 (m)',
+                color: '#3b82f6'
+            });
+        }
+
+        // 时间范围切换
+        function updateTimeInputs() {
+            const timeRange = document.getElementById('timeRange').value;
+            const customInputs = document.getElementById('customTimeInputs');
+
+            if (timeRange === 'custom') {
+                customInputs.style.display = 'grid';
+            } else {
+                customInputs.style.display = 'none';
+            }
+        }
+
+        // 查询数据
+        async function queryData() {
+            const dataType = document.getElementById('dataType').value;
+            const timeRange = document.getElementById('timeRange').value;
+
+            showLoading(true);
+
+            try {
+                let data;
+
+                if (dataType === 'analysis') {
+                    // 查询分析数据
+                    const params = getTimeParams(timeRange);
+                    data = await api.getAnalysisHistory(params);
+                } else {
+                    // 查询原始数据
+                    const params = getTimeParams(timeRange);
+                    data = await api.getRawHistory(params);
+                }
+
+                if (data.success) {
+                    currentData = data.data;
+                    displayData(currentData, dataType);
+                    Utils.showToast(`成功加载 ${data.count} 条记录`, 'success');
+                } else {
+                    Utils.showToast('查询失败: ' + (data.error || '未知错误'), 'error');
+                }
+            } catch (error) {
+                console.error('[History] Query error:', error);
+                Utils.showToast('查询失败: ' + error.message, 'error');
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        // 获取时间参数
+        function getTimeParams(timeRange) {
+            if (timeRange === 'custom') {
+                const start = document.getElementById('startTime').value;
+                const end = document.getElementById('endTime').value;
+                return { start, end };
+            }
+
+            const params = {};
+            switch (timeRange) {
+                case '1h':
+                    params.hours = 1;
+                    break;
+                case '6h':
+                    params.hours = 6;
+                    break;
+                case '24h':
+                    params.hours = 24;
+                    break;
+                case '7d':
+                    params.days = 7;
+                    break;
+                case '30d':
+                    params.days = 30;
+                    break;
+            }
+            return params;
+        }
+
+        // 显示数据
+        function displayData(data, dataType) {
+            if (!data || data.length === 0) {
+                Utils.showToast('没有找到数据', 'warning');
+                hideAllResults();
+                return;
+            }
+
+            if (dataType === 'analysis') {
+                displayAnalysisData(data);
+            } else {
+                displayRawData(data);
+            }
+        }
+
+        // 显示分析数据
+        function displayAnalysisData(data) {
+            // 显示统计信息
+            document.getElementById('statsCard').style.display = 'block';
+            document.getElementById('recordCount').textContent = data.length;
+
+            const hsValues = data.map(d => d.hs).filter(v => v !== null);
+            const tpValues = data.map(d => d.tp).filter(v => v !== null);
+
+            if (hsValues.length > 0) {
+                const avgHs = hsValues.reduce((a, b) => a + b, 0) / hsValues.length;
+                const maxHs = Math.max(...hsValues);
+                document.getElementById('avgHs').textContent = avgHs.toFixed(3);
+                document.getElementById('maxHs').textContent = maxHs.toFixed(3);
+            }
+
+            if (tpValues.length > 0) {
+                const avgTp = tpValues.reduce((a, b) => a + b, 0) / tpValues.length;
+                document.getElementById('avgTp').textContent = avgTp.toFixed(2);
+            }
+
+            // 更新趋势图
+            document.getElementById('chartCard').style.display = 'block';
+            const chartData = data.map(d => ({
+                timestamp: d.start_time,
+                value: d.hs
+            }));
+            chartManager.updateTrendChart('trendChart', chartData);
+
+            // 显示表格
+            displayAnalysisTable(data);
+        }
+
+        // 显示原始数据
+        function displayRawData(data) {
+            document.getElementById('statsCard').style.display = 'block';
+            document.getElementById('recordCount').textContent = data.length;
+
+            // 隐藏其他统计
+            document.getElementById('avgHs').textContent = '--';
+            document.getElementById('maxHs').textContent = '--';
+            document.getElementById('avgTp').textContent = '--';
+
+            // 隐藏图表
+            document.getElementById('chartCard').style.display = 'none';
+
+            // 显示表格
+            displayRawTable(data);
+        }
+
+        // 显示分析数据表格
+        function displayAnalysisTable(data) {
+            const tableCard = document.getElementById('tableCard');
+            const tableHeader = document.getElementById('tableHeader');
+            const tableBody = document.getElementById('tableBody');
+
+            tableCard.style.display = 'block';
+
+            // 表头
+            tableHeader.innerHTML = `
+                <tr>
+                    <th>开始时间</th>
+                    <th>持续时间(s)</th>
+                    <th>有效波高(m)</th>
+                    <th>峰值周期(s)</th>
+                    <th>平均周期(s)</th>
+                    <th>波向(°)</th>
+                    <th>峰值频率(Hz)</th>
+                </tr>
+            `;
+
+            // 表格内容
+            tableBody.innerHTML = data.map(row => `
+                <tr>
+                    <td>${Utils.formatTimestamp(row.start_time)}</td>
+                    <td>${row.duration_seconds || '--'}</td>
+                    <td>${Utils.formatNumber(row.hs, 3)}</td>
+                    <td>${Utils.formatNumber(row.tp, 2)}</td>
+                    <td>${Utils.formatNumber(row.tz, 2)}</td>
+                    <td>${Utils.formatNumber(row.theta, 1)}</td>
+                    <td>${Utils.formatNumber(row.fp, 3)}</td>
+                </tr>
+            `).join('');
+        }
+
+        // 显示原始数据表格
+        function displayRawTable(data) {
+            const tableCard = document.getElementById('tableCard');
+            const tableHeader = document.getElementById('tableHeader');
+            const tableBody = document.getElementById('tableBody');
+
+            tableCard.style.display = 'block';
+
+            // 表头
+            tableHeader.innerHTML = `
+                <tr>
+                    <th>时间</th>
+                    <th>雷达1高度(m)</th>
+                    <th>雷达2高度(m)</th>
+                    <th>雷达3高度(m)</th>
+                </tr>
+            `;
+
+            // 表格内容
+            tableBody.innerHTML = data.map(row => `
+                <tr>
+                    <td>${Utils.formatTimestamp(row.timestamp1)}</td>
+                    <td>${Utils.formatNumber(row.eta1, 3)}</td>
+                    <td>${Utils.formatNumber(row.eta2, 3)}</td>
+                    <td>${Utils.formatNumber(row.eta3, 3)}</td>
+                </tr>
+            `).join('');
+        }
+
+        // 导出CSV
+        function exportCSV() {
+            if (!currentData || currentData.length === 0) {
+                Utils.showToast('没有数据可导出', 'warning');
+                return;
+            }
+
+            const dataType = document.getElementById('dataType').value;
+            const filename = `wave_${dataType}_${Date.now()}.csv`;
+            Utils.exportToCSV(currentData, filename);
+        }
+
+        // 导出JSON
+        function exportJSON() {
+            if (!currentData || currentData.length === 0) {
+                Utils.showToast('没有数据可导出', 'warning');
+                return;
+            }
+
+            const dataType = document.getElementById('dataType').value;
+            const filename = `wave_${dataType}_${Date.now()}.json`;
+            Utils.exportToJSON(currentData, filename);
+        }
+
+        // 显示/隐藏加载状态
+        function showLoading(show) {
+            document.getElementById('loadingOverlay').style.display = show ? 'flex' : 'none';
+        }
+
+        // 隐藏所有结果
+        function hideAllResults() {
+            document.getElementById('statsCard').style.display = 'none';
+            document.getElementById('chartCard').style.display = 'none';
+            document.getElementById('tableCard').style.display = 'none';
+        }
+
+        // 格式化日期时间为datetime-local格式
+        function formatDateTimeLocal(date) {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            const hours = String(date.getHours()).padStart(2, '0');
+            const minutes = String(date.getMinutes()).padStart(2, '0');
+
+            return `${year}-${month}-${day}T${hours}:${minutes}`;
+        }
+    </script>
+</body>
+</html>

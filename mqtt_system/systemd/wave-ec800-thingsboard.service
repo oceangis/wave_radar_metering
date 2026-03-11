@@ -1,0 +1,19 @@
+[Unit]
+Description=Wave Monitoring - EC800 ThingsBoard Bridge
+After=network.target wave-analyzer.service
+Wants=wave-analyzer.service
+PartOf=wave-monitor.target
+
+[Service]
+Type=simple
+User=obsis
+Group=obsis
+WorkingDirectory=/home/obsis/radar/mqtt_system
+ExecStart=/home/obsis/radar/mqtt_system/venv/bin/python3 /home/obsis/radar/mqtt_system/services/ec800_thingsboard.py
+Restart=always
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

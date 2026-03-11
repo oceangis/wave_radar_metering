@@ -1,0 +1,2436 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="波浪监测系统 - 实时数据监控与分析">
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
+    <title>波浪监测系统 - 实时监控</title>
+
+    <!-- CSS -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}?v=20260110a">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}?v=20260110a">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/charts.css') }}?v=20260110a">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/ocean-spectrum.css') }}?v=20260110a">
+
+    <!-- Chart.js with date adapter -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- 页面标题 -->
+        <h1>🌊 波浪监测系统</h1>
+
+        <!-- 状态栏 -->
+        <div class="status-bar">
+            <div class="status-item">
+                <div class="status-indicator" id="wsIndicator"></div>
+                <span>WebSocket: <strong id="wsStatus">连接中...</strong></span>
+            </div>
+            <div class="status-item">
+                <span>系统时间: <strong id="systemTime">--</strong></span>
+            </div>
+            <div class="status-item">
+                <span>采样率: <strong id="sampleRate">-- Hz</strong></span>
+            </div>
+            <div class="status-item">
+                <span>波浪分析时间: <strong id="analysisTime" style="color: #2196F3;">--</strong></span>
+            </div>
+            <div class="status-item">
+                <span>最后更新: <strong id="lastUpdate">--</strong></span>
+            </div>
+        </div>
+
+        <!-- 快速操作 -->
+        <div class="controls">
+            <a href="/history" class="btn btn-primary">📊 历史数据</a>
+            <a href="/spectrum" class="btn btn-primary">📈 频谱分析</a>
+            <a href="/config" class="btn btn-secondary">⚙️ 系统配置</a>
+            <button class="btn btn-secondary" onclick="refreshData()">🔄 刷新数据</button>
+        </div>
+
+        <!-- 分析进度卡片 -->
+        <div class="card" id="analysisProgressCard" style="display: none;">
+            <div class="card-header">
+                <span>🔄 数据采集进度</span>
+                <span id="progressStatus" style="float: right; font-size: 0.85em; color: #666;">正在采集数据...</span>
+            </div>
+            <div class="card-body" style="padding: 10px 15px;">
+                <div style="margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center;">
+                    <span style="font-size: 0.85em; color: #666;">
+                        已采集: <strong id="currentSamples">0</strong> / <strong id="requiredSamples">0</strong> 样本
+                    </span>
+                    <span style="font-size: 1em; font-weight: bold; color: #2196F3;" id="progressPercent">0%</span>
+                </div>
+                <div style="width: 100%; height: 18px; background: #e0e0e0; border-radius: 9px; overflow: hidden; box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);">
+                    <div id="progressBar" style="height: 100%; width: 0%; background: linear-gradient(90deg, #2196F3, #21CBF3); transition: width 0.3s ease; display: flex; align-items: center; justify-content: flex-end; padding-right: 6px; color: white; font-size: 0.7em; font-weight: bold;"></div>
+                </div>
+                <div style="margin-top: 6px; font-size: 0.8em; color: #666;" id="progressMessage">
+                    分析窗口需要 <strong id="windowDurationDisplay">1200</strong> 秒的数据才能开始波浪分析
+                </div>
+            </div>
+        </div>
+
+        <!-- 主要波浪参数大字展示 -->
+        <div class="grid grid-4">
+            <div class="card">
+                <div class="metric-value-large">
+                    <div class="value-row"><div class="value" id="hm0_main">--</div><div class="unit">m</div></div>
+                    <div class="label">有效波高 Hm0</div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="metric-value-large">
+                    <div class="value-row"><div class="value" id="hs">--</div><div class="unit">m</div></div>
+                    <div class="label">有效波高 Hs</div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="metric-value-large">
+                    <div class="value-row"><div class="value" id="tp">--</div><div class="unit">s</div></div>
+                    <div class="label">峰值周期 Tp</div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="metric-value-large">
+                    <div class="value-row"><div class="value" id="theta">--</div><div class="unit">°</div></div>
+                    <div class="label">波向 θ</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 波浪参数详情卡片 -->
+        <div class="grid grid-3">
+            <!-- 时域分析 - 完整版 -->
+            <div class="card">
+                <div class="card-header">
+                    <span>📊 时域分析</span>
+                    <span id="timeDomainAnalysisTime" style="font-size: 1em; color: #64748b; font-weight: 500;">--</span>
+                </div>
+                <div class="param-list">
+                    <!-- 波高参数 -->
+                    <div class="param-item">
+                        <span class="param-label">最大波高 (Hmax)</span>
+                        <span class="param-value" id="hmax">-- m</span>
+                    </div>
+                    <div class="param-item">
+                        <span class="param-label">1/10波高 (H1/10)</span>
+                        <span class="param-value" id="h110">-- m</span>
+                    </div>
+                    <div class="param-item">
+                        <span class="param-label">有效波高 (Hs)</span>
+                        <span class="param-value" id="hs_zc">-- m</span>
+                    </div>
+                    <div class="param-item">
+                        <span class="param-label">平均波高 (Hmean)</span>
+                        <span class="param-value" id="hmean">-- m</span>
+                    </div>
+                    <!-- 周期参数 -->
+                    <div class="param-item">
+                        <span class="param-label">最大波周期 (Tmax)</span>
+                        <span class="param-value" id="tmax">-- s</span>
+                    </div>
+                    <div class="param-item">
+                        <span class="param-label">1/10波周期 (T1/10)</span>
+                        <span class="param-value" id="t110">-- s</span>
+                    </div>
+                    <div class="param-item">
+                        <span class="param-label">有效波周期 (Ts)</span>
+                        <span class="param-value" id="ts">-- s</span>
+                    </div>
+                    <div class="param-item">
+                        <span class="param-label">平均波周期 (Tmean)</span>
+                        <span class="param-value" id="tmean">-- s</span>
+                    </div>
+                    <!-- 其他参数 -->
+                    <div class="param-item">
+                        <span class="param-label">波浪数</span>
+                        <span class="param-value" id="waveCount">--</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 频谱分析 - 完整版 -->
+            <div class="card">
+                <div class="card-header">
+                    <span>📈 频谱分析</span>
+                    <span id="spectrumAnalysisTime" style="font-size: 1em; color: #64748b; font-weight: 500;">--</span>
+                </div>
+                <div class="param-list">
+                    <!-- 波高参数 -->
+                    <div class="param-item" style="background: rgba(59, 130, 246, 0.1);">
+                        <span class="param-label">谱有效波高 (Hm0)</span>
+                        <span class="param-value" id="hm0">-- m</span>
+                    </div>
+                    <div class="param-item" style="background: rgba(59, 130, 246, 0.1);">
+                        <span class="param-label">平均波高 (Hmean)</span>
+                        <span class="param-value" id="hmean_spec">-- m</span>
+                    </div>
+                    <!-- 周期参数 -->
+                    <div class="param-item" style="background: rgba(16, 185, 129, 0.1);">
+                        <span class="param-label">峰值周期 (Tp)</span>
+                        <span class="param-value" id="tp_spec">-- s</span>
+                    </div>
+                    <div class="param-item" style="background: rgba(16, 185, 129, 0.1);">
+                        <span class="param-label">平均能量周期 (Tm01)</span>
+                        <span class="param-value" id="tm01_spec">-- s</span>
+                    </div>
+                    <div class="param-item" style="background: rgba(16, 185, 129, 0.1);">
+                        <span class="param-label">零交叉周期 (Tz)</span>
+                        <span class="param-value" id="tz_spec">-- s</span>
+                    </div>
+                    <div class="param-item" style="background: rgba(16, 185, 129, 0.1);">
+                        <span class="param-label">能量周期 (Te)</span>
+                        <span class="param-value" id="te_spec">-- s</span>
+                    </div>
+                    <!-- 频率参数 -->
+                    <div class="param-item" style="background: rgba(245, 158, 11, 0.1);">
+                        <span class="param-label">峰值频率 (fp)</span>
+                        <span class="param-value" id="fp">-- Hz</span>
+                    </div>
+                    <div class="param-item" style="background: rgba(245, 158, 11, 0.1);">
+                        <span class="param-label">平均频率 (fm)</span>
+                        <span class="param-value" id="fm_spec">-- Hz</span>
+                    </div>
+                    <div class="param-item" style="background: rgba(245, 158, 11, 0.1);">
+                        <span class="param-label">零交叉频率 (fz)</span>
+                        <span class="param-value" id="fz_spec">-- Hz</span>
+                    </div>
+                    <div class="param-item" style="background: rgba(245, 158, 11, 0.1);">
+                        <span class="param-label">能量频率 (fe)</span>
+                        <span class="param-value" id="fe_spec">-- Hz</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 右侧：潮位 + 雷达状态组合 -->
+            <div style="display: flex; flex-direction: column; gap: 0;">
+                <!-- 潮位信息 -->
+                <div class="card">
+                    <div class="card-header">
+                        <span>🌊 潮位信息</span>
+                        <span id="tideAnalysisTime" style="font-size: 1em; color: #64748b; font-weight: 500;">--</span>
+                    </div>
+                    <div class="card-body" style="padding: 10px 15px;">
+                        <div style="text-align: center; padding: 15px; background: linear-gradient(135deg, #0ea5e9, #06b6d4); border-radius: 12px; color: white;">
+                            <div style="font-size: 14px; opacity: 0.9; margin-bottom: 6px;">当前潮位</div>
+                            <div style="font-size: 36px; font-weight: bold; line-height: 1;" id="currentTideLevel">-- m</div>
+                            <div style="font-size: 12px; opacity: 0.8; margin-top: 6px;" id="tideUpdateTime">--</div>
+                        </div>
+                        <div class="param-list" style="font-size: 0.9em; margin-top: 8px;">
+                            <div class="param-item">
+                                <span class="param-label">阵列高度</span>
+                                <span class="param-value" id="arrayHeightDisplay">-- m</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 雷达设备状态 -->
+                <div class="card">
+                    <div class="card-header">雷达设备状态</div>
+                    <div class="radar-grid">
+                        <div class="radar-item" id="radar1">
+                            <div class="radar-name">雷达 1</div>
+                            <div class="radar-status" id="radar1Status">--</div>
+                            <div class="radar-value" id="radar1Height">-- m</div>
+                        </div>
+                        <div class="radar-item" id="radar2">
+                            <div class="radar-name">雷达 2</div>
+                            <div class="radar-status" id="radar2Status">--</div>
+                            <div class="radar-value" id="radar2Height">-- m</div>
+                        </div>
+                        <div class="radar-item" id="radar3">
+                            <div class="radar-name">雷达 3</div>
+                            <div class="radar-status" id="radar3Status">--</div>
+                            <div class="radar-value" id="radar3Height">-- m</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 方向谱参数显示区域 -->
+        <div class="ocean-spectrum-section" id="directionalSpectrumSection">
+            <!-- Section Header -->
+            <div class="ocean-section-header">
+                <div class="ocean-section-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <path d="M12 2v20"/>
+                        <path d="M2 12h20"/>
+                        <path d="M12 12l7-7"/>
+                    </svg>
+                </div>
+                <div>
+                    <div class="ocean-section-title">Directional Spectrum Analysis</div>
+                    <div class="ocean-section-subtitle">Wave direction and 2D spectrum S(f,theta)</div>
+                </div>
+                <div class="realtime-indicator" style="margin-left: auto;">
+                    <div class="realtime-dot" id="diwaspStatusDot"></div>
+                    <span id="diwaspStatusText">Waiting...</span>
+                </div>
+            </div>
+
+            <!-- 方向谱参数网格 -->
+            <div class="spectrum-params-grid" style="margin-bottom: 20px;">
+                <div class="spectrum-param-item">
+                    <div class="spectrum-param-label">Peak Direction Dp</div>
+                    <div class="spectrum-param-value" id="dirWaveDirection">--<span class="spectrum-param-unit">deg</span></div>
+                </div>
+                <div class="spectrum-param-item">
+                    <div class="spectrum-param-label">Mean Direction</div>
+                    <div class="spectrum-param-value" id="dirMeanDirection">--<span class="spectrum-param-unit">deg</span></div>
+                </div>
+                <div class="spectrum-param-item">
+                    <div class="spectrum-param-label">Directional Spread</div>
+                    <div class="spectrum-param-value" id="dirSpread">--<span class="spectrum-param-unit">deg</span></div>
+                </div>
+                <div class="spectrum-param-item">
+                    <div class="spectrum-param-label">Direction at Tp</div>
+                    <div class="spectrum-param-value" id="dirAtPeak">--<span class="spectrum-param-unit">deg</span></div>
+                </div>
+            </div>
+
+            <!-- 2D方向谱热力图 - 已禁用以节省树莓派资源 -->
+            <div class="spectrum-chart-card" style="display: none;">
+                <div class="spectrum-chart-header">
+                    <div class="spectrum-chart-title">
+                        <span class="title-icon">S</span>
+                        2D Directional Spectrum S(f,theta)
+                    </div>
+                    <div class="spectrum-chart-badge" id="diwaspMethod">--</div>
+                </div>
+                <div class="spectrum-chart-container" style="height: 350px; position: relative;">
+                    <canvas id="directionalSpectrumChart"></canvas>
+                    <div id="directionalSpectrumNoData" class="spectrum-no-data" style="display: none;">
+                        <div class="spectrum-no-data-icon">N/A</div>
+                        <div>No directional spectrum data available</div>
+                        <div style="font-size: 0.85em; opacity: 0.7; margin-top: 5px;">等待方向谱分析...</div>
+                    </div>
+                </div>
+                <!-- 颜色图例 -->
+                <div class="spectrum-legend" style="margin-top: 10px;">
+                    <div style="display: flex; align-items: center; gap: 10px; width: 100%;">
+                        <span style="color: var(--bio-seafoam); font-size: 0.8rem;">Low Energy</span>
+                        <div style="flex: 1; height: 12px; border-radius: 6px; background: linear-gradient(90deg, #0000ff, #00ffff, #00ff00, #ffff00, #ff0000);"></div>
+                        <span style="color: var(--bio-seafoam); font-size: 0.8rem;">High Energy</span>
+                    </div>
+                    <div style="display: flex; justify-content: center; gap: 20px; width: 100%; margin-top: 8px;">
+                        <span style="color: rgba(255,255,255,0.7); font-size: 0.75rem;">X-Axis: Direction (0=N, clockwise)</span>
+                        <span style="color: rgba(255,255,255,0.7); font-size: 0.75rem;">Y-Axis: Frequency (Hz)</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 1D方向谱（按方向积分）-->
+            <div class="spectrum-charts-row">
+                <div class="spectrum-chart-card">
+                    <div class="spectrum-chart-header">
+                        <div class="spectrum-chart-title">
+                            <span class="title-icon">D</span>
+                            Directional Distribution
+                        </div>
+                        <div class="spectrum-chart-badge">Degrees</div>
+                    </div>
+                    <div class="spectrum-chart-container" style="height: 200px;">
+                        <canvas id="directionalDistChart"></canvas>
+                    </div>
+                </div>
+                <div class="spectrum-chart-card">
+                    <div class="spectrum-chart-header">
+                        <div class="spectrum-chart-title">
+                            <span class="title-icon">f</span>
+                            Frequency Spectrum
+                        </div>
+                        <div class="spectrum-chart-badge">Hz</div>
+                    </div>
+                    <div class="spectrum-chart-container" style="height: 200px;">
+                        <canvas id="diwaspFreqChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+
+        <!-- 实时波浪数据图表 -->
+        <div class="chart-card">
+            <div class="chart-card-header">
+                <div class="chart-card-title">实时波浪数据（最近10分钟）</div>
+                <div class="chart-card-actions">
+                    <button class="btn btn-sm btn-outline" onclick="clearChartData()">清空</button>
+                    <button class="btn btn-sm btn-primary" onclick="toggleChartPause()">
+                        <span id="pauseIcon">⏸</span>
+                    </button>
+                </div>
+            </div>
+            <div class="chart-wrapper chart-lg">
+                <canvas id="realtimeChart"></canvas>
+            </div>
+        </div>
+
+        <!-- 波浪分析图表 (频域和分析窗口) -->
+        <div class="charts-grid layout-2">
+            <!-- 频域分析 -->
+            <div class="chart-card">
+                <div class="chart-card-header">
+                    <div class="chart-card-title">波浪分析 - 频谱</div>
+                    <div class="chart-card-subtitle" id="freqDomainInfo">等待分析数据...</div>
+                </div>
+                <div class="chart-wrapper chart-md">
+                    <canvas id="freqDomainChart"></canvas>
+                </div>
+            </div>
+
+            <!-- 分析窗口数据 -->
+            <div class="chart-card">
+                <div class="chart-card-header">
+                    <div class="chart-card-title">分析窗口数据</div>
+                    <div class="chart-card-subtitle" id="analysisWindowInfo">等待数据...</div>
+                </div>
+                <div class="chart-wrapper chart-md">
+                    <canvas id="analysisWindowChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- ========== Ocean-Themed Wave Spectrum Parameters Section ========== -->
+        <div class="ocean-spectrum-section">
+            <!-- Section Header -->
+            <div class="ocean-section-header">
+                <div class="ocean-section-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2">
+                        <path d="M2 12c2-2 4-4 6-4s4 2 6 4 4 4 6 4"/>
+                        <path d="M2 6c2-2 4-4 6-4s4 2 6 4 4 4 6 4"/>
+                        <path d="M2 18c2-2 4-4 6-4s4 2 6 4 4 4 6 4"/>
+                    </svg>
+                </div>
+                <div>
+                    <div class="ocean-section-title">Wave Spectrum Analysis</div>
+                    <div class="ocean-section-subtitle">Real-time spectral parameters trend monitoring</div>
+                </div>
+                <div class="realtime-indicator" style="margin-left: auto;">
+                    <div class="realtime-dot"></div>
+                    <span>LIVE</span>
+                </div>
+            </div>
+
+            <!-- Period Parameters Trend Chart -->
+            <div class="spectrum-chart-card">
+                <div class="spectrum-chart-header">
+                    <div class="spectrum-chart-title">
+                        <span class="title-icon">T</span>
+                        Period Parameters Trend
+                    </div>
+                    <div class="spectrum-chart-badge">Seconds</div>
+                </div>
+                <div class="spectrum-chart-container">
+                    <canvas id="periodTrendChart"></canvas>
+                </div>
+                <!-- Period Parameters Display -->
+                <div class="spectrum-params-grid">
+                    <div class="spectrum-param-item">
+                        <div class="spectrum-param-label">Tp Peak Period</div>
+                        <div class="spectrum-param-value" id="specTp">--<span class="spectrum-param-unit">s</span></div>
+                    </div>
+                    <div class="spectrum-param-item">
+                        <div class="spectrum-param-label">Tm01 Mean Energy</div>
+                        <div class="spectrum-param-value" id="specTm01">--<span class="spectrum-param-unit">s</span></div>
+                    </div>
+                    <div class="spectrum-param-item">
+                        <div class="spectrum-param-label">Tz Zero-Crossing</div>
+                        <div class="spectrum-param-value" id="specTz">--<span class="spectrum-param-unit">s</span></div>
+                    </div>
+                    <div class="spectrum-param-item">
+                        <div class="spectrum-param-label">Te Energy Period</div>
+                        <div class="spectrum-param-value" id="specTe">--<span class="spectrum-param-unit">s</span></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Two-column layout for Wave Height and Frequency -->
+            <div class="spectrum-charts-row">
+                <!-- Wave Height Parameters Trend Chart -->
+                <div class="spectrum-chart-card">
+                    <div class="spectrum-chart-header">
+                        <div class="spectrum-chart-title">
+                            <span class="title-icon">H</span>
+                            Wave Height Trend
+                        </div>
+                        <div class="spectrum-chart-badge">Meters</div>
+                    </div>
+                    <div class="spectrum-chart-container">
+                        <canvas id="heightTrendChart"></canvas>
+                    </div>
+                    <!-- Wave Height Parameters Display -->
+                    <div class="spectrum-params-grid">
+                        <div class="spectrum-param-item">
+                            <div class="spectrum-param-label">Hm0 Significant</div>
+                            <div class="spectrum-param-value" id="specHm0">--<span class="spectrum-param-unit">m</span></div>
+                        </div>
+                        <div class="spectrum-param-item">
+                            <div class="spectrum-param-label">Hmean Average</div>
+                            <div class="spectrum-param-value" id="specHmean">--<span class="spectrum-param-unit">m</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Frequency Parameters Trend Chart -->
+                <div class="spectrum-chart-card">
+                    <div class="spectrum-chart-header">
+                        <div class="spectrum-chart-title">
+                            <span class="title-icon">f</span>
+                            Frequency Parameters Trend
+                        </div>
+                        <div class="spectrum-chart-badge">Hz</div>
+                    </div>
+                    <div class="spectrum-chart-container">
+                        <canvas id="freqTrendChart"></canvas>
+                    </div>
+                    <!-- Frequency Parameters Display -->
+                    <div class="spectrum-params-grid">
+                        <div class="spectrum-param-item">
+                            <div class="spectrum-param-label">fp Peak</div>
+                            <div class="spectrum-param-value" id="specFp">--<span class="spectrum-param-unit">Hz</span></div>
+                        </div>
+                        <div class="spectrum-param-item">
+                            <div class="spectrum-param-label">fm Mean</div>
+                            <div class="spectrum-param-value" id="specFm">--<span class="spectrum-param-unit">Hz</span></div>
+                        </div>
+                        <div class="spectrum-param-item">
+                            <div class="spectrum-param-label">fz Zero-Cross</div>
+                            <div class="spectrum-param-value" id="specFz">--<span class="spectrum-param-unit">Hz</span></div>
+                        </div>
+                        <div class="spectrum-param-item">
+                            <div class="spectrum-param-label">fe Energy</div>
+                            <div class="spectrum-param-value" id="specFe">--<span class="spectrum-param-unit">Hz</span></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <!-- ========== End Ocean-Themed Wave Spectrum Section ========== -->
+
+        <!-- 系统统计 -->
+        <div class="card">
+            <div class="card-header">系统统计</div>
+            <div class="stat-grid">
+                <div class="stat-card stat-success">
+                    <div class="stat-label">采集样本数</div>
+                    <div class="stat-value" id="samplesCollected">--</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">已发布样本</div>
+                    <div class="stat-value" id="samplesPublished">--</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">分析次数</div>
+                    <div class="stat-value" id="analysesCompleted">--</div>
+                </div>
+                <div class="stat-card stat-error">
+                    <div class="stat-label">错误数</div>
+                    <div class="stat-value" id="errors">0</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 时间戳 -->
+        <div class="timestamp-display">
+            页面加载时间: <span id="pageLoadTime">--</span>
+        </div>
+    </div>
+
+    <!-- JavaScript -->
+    <script src="{{ url_for('static', filename='js/utils.js') }}?v=20251123a"></script>
+    <script src="{{ url_for('static', filename='js/api.js') }}?v=20251123a"></script>
+    <script src="{{ url_for('static', filename='js/websocket.js') }}?v=20251123a"></script>
+    <script src="{{ url_for('static', filename='js/charts.js') }}?v=20251123a"></script>
+
+    <script>
+        // ==================== 全局状态 ====================
+        let isPaused = false;
+        let realtimeChart = null;
+        let freqDomainChart = null;
+        let analysisWindowChart = null;
+        let fallbackPollingInterval = null;
+        let wsConnected = false;
+
+        // Wave Spectrum Trend Charts
+        let periodTrendChart = null;
+        let heightTrendChart = null;
+        let freqParamTrendChart = null;
+
+        // Directional Spectrum Charts (2D heatmap and 1D distributions)
+        let directionalSpectrumChart = null;
+        let directionalDistChart = null;
+        let diwaspFreqChart = null;
+
+        // Spectrum trend data storage (max 50 data points for trend history)
+        const MAX_TREND_POINTS = 50;
+        let spectrumTrendData = {
+            timestamps: [],
+            Tp: [], Tm01: [], Tz: [], Te: [],
+            Hm0: [], Hmean: [],
+            fp: [], fm: [], fz: [], fe: []
+        };
+
+        // 进度条状态（简化版：只用服务器数据 + 倒计时）
+        let lastAnalyzerStatus = null;
+        let countdownSeconds = 0;           // 倒计时秒数
+        let countdownInterval = null;       // 倒计时定时器
+
+        // ==================== 初始化 ====================
+        window.addEventListener('DOMContentLoaded', () => {
+            console.log('[Dashboard] Initializing...');
+
+            // 显示页面加载时间
+            document.getElementById('pageLoadTime').textContent = Utils.formatTimestamp(new Date());
+
+            // 初始化图表
+            initCharts();
+
+            // 初始化波浪谱趋势图表
+            initSpectrumTrendCharts();
+
+            // 初始化方向谱图表
+            initDirectionalSpectrumCharts();
+
+            // 连接WebSocket
+            connectWebSocket();
+
+            // 获取初始数据
+            loadInitialData();
+
+            // 加载阵列配置
+            loadArrayConfig();
+
+            // 加载潮位数据
+            loadTideData();
+            // 每30秒更新一次潮位
+            setInterval(loadTideData, 30000);
+
+            // 启动系统时钟
+            startSystemClock();
+
+            // 启动fallback轮询 (当WebSocket断开时自动获取数据)
+            console.log('[Dashboard] Starting fallback polling...');
+            startFallbackPolling();
+            console.log('[Dashboard] Initialization complete');
+        });
+
+        // ==================== Fallback 轮询机制 ====================
+        let progressPollingInterval = null;  // 专门用于进度条更新的轮询
+
+        function startFallbackPolling() {
+            // 每2秒检查一次，如果WebSocket断开则主动获取数据
+            fallbackPollingInterval = setInterval(async () => {
+                if (!wsConnected) {
+                    console.log('[Fallback] WebSocket disconnected, polling data...');
+                    try {
+                        await loadLatestDataSilent();
+                    } catch (e) {
+                        console.error('[Fallback] Polling failed:', e);
+                    }
+                }
+            }, 2000);  // 从5000ms减少到2000ms
+
+            // 始终启动进度条轮询（每1.5秒），确保进度条实时更新
+            startProgressPolling();
+        }
+
+        let lastAnalyzedTimestamp = null;  // 记录上次分析数据的时间戳，用于检测新数据
+
+        // 进度轮询的核心逻辑（提取为独立函数，便于立即调用）
+        async function pollProgressOnce() {
+            console.log('[Progress Poll] Polling...');
+            try {
+                const data = await api.getLatest();
+                console.log('[Progress Poll] Got data, status:', data.status);
+
+                // 检查是否有新的分析数据（通过时间戳判断）
+                if (data.analyzed) {
+                    const newTimestamp = data.analyzed.metadata?.end_time || data.analyzed.timestamp;
+                    if (newTimestamp && newTimestamp !== lastAnalyzedTimestamp) {
+                        console.log('[Progress Poll] New analysis data detected, updating...');
+                        lastAnalyzedTimestamp = newTimestamp;
+                        updateAnalyzedData(data.analyzed);
+                    }
+                }
+
+                // 更新进度相关的状态
+                if (data.status) {
+                    if (data.status.analyzer) {
+                        updateAnalysisProgress(data.status.analyzer);
+                    } else {
+                        // 没有 analyzer 状态时，显示等待状态
+                        showProgressWaitingState();
+                    }
+                    // 同时更新统计信息
+                    if (data.status.collector) {
+                        const stats = data.status.collector.statistics || {};
+                        const samplesElem = document.getElementById('samplesCollected');
+                        const publishedElem = document.getElementById('samplesPublished');
+                        if (samplesElem && stats.samples_collected !== undefined) {
+                            samplesElem.textContent = stats.samples_collected;
+                        }
+                        if (publishedElem && stats.samples_published !== undefined) {
+                            publishedElem.textContent = stats.samples_published;
+                        }
+                    }
+                }
+            } catch (e) {
+                console.debug('[Progress Poll] Failed:', e.message);
+            }
+        }
+
+        function startProgressPolling() {
+            console.log('[Progress] startProgressPolling called, existing interval:', progressPollingInterval);
+            if (progressPollingInterval) {
+                console.log('[Progress] Already running, skipping');
+                return;
+            }
+
+            // 立即执行一次轮询（不等待定时器）
+            console.log('[Progress] Executing immediate poll...');
+            pollProgressOnce();
+
+            // 然后启动定期轮询
+            progressPollingInterval = setInterval(pollProgressOnce, 1500);
+            console.log('[Progress] Interval started, ID:', progressPollingInterval);
+        }
+
+        function stopProgressPolling() {
+            if (progressPollingInterval) {
+                clearInterval(progressPollingInterval);
+                progressPollingInterval = null;
+            }
+        }
+
+        function stopFallbackPolling() {
+            if (fallbackPollingInterval) {
+                clearInterval(fallbackPollingInterval);
+                fallbackPollingInterval = null;
+            }
+            stopProgressPolling();
+        }
+
+        // 静默加载数据（不显示错误toast）
+        async function loadLatestDataSilent() {
+            try {
+                const data = await api.getLatest();
+
+                if (data.analyzed) {
+                    updateAnalyzedData(data.analyzed);
+                }
+                if (data.raw) {
+                    updateRawData(data.raw);
+                }
+                if (data.status) {
+                    if (data.status.collector) {
+                        updateSystemStatus(data.status.collector);
+                    }
+                    if (data.status.analyzer) {
+                        updateSystemStatus(data.status.analyzer);
+                        updateAnalysisProgress(data.status.analyzer);  // 同步更新进度条
+                    }
+                }
+            } catch (error) {
+                console.debug('[Fallback] Silent load failed:', error.message);
+            }
+        }
+
+        // ==================== 图表初始化 ====================
+        function initCharts() {
+            realtimeChart = chartManager.createTimeSeriesChart('realtimeChart', {
+                title: '实时波浪数据',
+                yAxisLabel: '液位高度 (m)',
+                datasets: [
+                    { label: '雷达 1', color: '#3b82f6' },
+                    { label: '雷达 2', color: '#10b981' },
+                    { label: '雷达 3', color: '#f59e0b' }
+                ]
+            });
+
+            // 频域分析图表
+            freqDomainChart = new Chart(document.getElementById('freqDomainChart'), {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [{
+                        label: '能量谱密度',
+                        data: [],
+                        borderColor: '#10b981',
+                        backgroundColor: 'rgba(16, 185, 129, 0.2)',
+                        borderWidth: 2,
+                        pointRadius: 0,
+                        fill: true
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: true, position: 'top' },
+                        title: { display: false }
+                    },
+                    scales: {
+                        x: {
+                            title: { display: true, text: '频率 (Hz)' },
+                            ticks: { maxTicksLimit: 10 }
+                        },
+                        y: {
+                            title: { display: true, text: '能量谱密度 (m²/Hz)' }
+                        }
+                    },
+                    animation: false
+                }
+            });
+
+            // 分析窗口图表（显示3个雷达数据）
+            analysisWindowChart = new Chart(document.getElementById('analysisWindowChart'), {
+                type: 'line',
+                data: {
+                    labels: [],
+                    datasets: [
+                        {
+                            label: '雷达1',
+                            data: [],
+                            borderColor: '#3b82f6',
+                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                            borderWidth: 1.5,
+                            pointRadius: 0,
+                            fill: false
+                        },
+                        {
+                            label: '雷达2',
+                            data: [],
+                            borderColor: '#10b981',
+                            backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                            borderWidth: 1.5,
+                            pointRadius: 0,
+                            fill: false
+                        },
+                        {
+                            label: '雷达3',
+                            data: [],
+                            borderColor: '#f59e0b',
+                            backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                            borderWidth: 1.5,
+                            pointRadius: 0,
+                            fill: false
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: true, position: 'top' },
+                        title: { display: false }
+                    },
+                    scales: {
+                        x: {
+                            title: { display: true, text: '样本序号' },
+                            ticks: { maxTicksLimit: 10 }
+                        },
+                        y: {
+                            title: { display: true, text: '波面高度 (m)' }
+                        }
+                    },
+                    animation: false
+                }
+            });
+
+            console.log('[Dashboard] Charts initialized');
+        }
+
+        // ==================== 波浪谱趋势图表初始化 ====================
+        function initSpectrumTrendCharts() {
+            // Ocean-themed chart colors with glow effects
+            const oceanColors = {
+                cyan: '#00d4ff',
+                seafoam: '#00f5d4',
+                coral: '#ff6b9d',
+                golden: '#ffd93d',
+                violet: '#c084fc',
+                rose: '#fb7185'
+            };
+
+            // Common chart options for ocean theme
+            const oceanChartOptions = {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: {
+                    duration: 500,
+                    easing: 'easeInOutQuart'
+                },
+                interaction: {
+                    mode: 'index',
+                    intersect: false,
+                },
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'top',
+                        labels: {
+                            color: 'rgba(255, 255, 255, 0.9)',
+                            font: { size: 11, weight: '500' },
+                            padding: 15,
+                            usePointStyle: true,
+                            pointStyle: 'line'
+                        }
+                    },
+                    tooltip: {
+                        backgroundColor: 'rgba(13, 33, 55, 0.95)',
+                        titleColor: '#00d4ff',
+                        bodyColor: 'rgba(255, 255, 255, 0.9)',
+                        borderColor: 'rgba(0, 212, 255, 0.3)',
+                        borderWidth: 1,
+                        cornerRadius: 8,
+                        padding: 12,
+                        displayColors: true,
+                        callbacks: {
+                            title: function(context) {
+                                if (context[0].label) {
+                                    return new Date(context[0].label).toLocaleString('zh-CN');
+                                }
+                                return context[0].label;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        type: 'time',
+                        time: {
+                            displayFormats: {
+                                minute: 'HH:mm',
+                                hour: 'HH:mm'
+                            },
+                            tooltipFormat: 'yyyy-MM-dd HH:mm:ss'
+                        },
+                        grid: {
+                            color: 'rgba(0, 212, 255, 0.1)',
+                            drawBorder: false
+                        },
+                        ticks: {
+                            color: 'rgba(144, 224, 239, 0.8)',
+                            maxRotation: 0,
+                            font: { size: 10 }
+                        }
+                    },
+                    y: {
+                        grid: {
+                            color: 'rgba(0, 212, 255, 0.1)',
+                            drawBorder: false
+                        },
+                        ticks: {
+                            color: 'rgba(144, 224, 239, 0.8)',
+                            font: { size: 10 }
+                        }
+                    }
+                }
+            };
+
+            // Period Trend Chart (Tp, Tm01, Tz, Te)
+            const periodCtx = document.getElementById('periodTrendChart');
+            if (periodCtx) {
+                periodTrendChart = new Chart(periodCtx, {
+                    type: 'line',
+                    data: {
+                        labels: [],
+                        datasets: [
+                            {
+                                label: 'Tp (Peak)',
+                                data: [],
+                                borderColor: oceanColors.cyan,
+                                backgroundColor: oceanColors.cyan + '20',
+                                borderWidth: 2.5,
+                                pointRadius: 3,
+                                pointHoverRadius: 6,
+                                pointBackgroundColor: oceanColors.cyan,
+                                pointBorderColor: '#fff',
+                                pointBorderWidth: 1,
+                                fill: false,
+                                tension: 0.4
+                            },
+                            {
+                                label: 'Tm01 (Energy)',
+                                data: [],
+                                borderColor: oceanColors.seafoam,
+                                backgroundColor: oceanColors.seafoam + '20',
+                                borderWidth: 2.5,
+                                pointRadius: 3,
+                                pointHoverRadius: 6,
+                                pointBackgroundColor: oceanColors.seafoam,
+                                pointBorderColor: '#fff',
+                                pointBorderWidth: 1,
+                                fill: false,
+                                tension: 0.4
+                            },
+                            {
+                                label: 'Tz (Zero-Cross)',
+                                data: [],
+                                borderColor: oceanColors.coral,
+                                backgroundColor: oceanColors.coral + '20',
+                                borderWidth: 2.5,
+                                pointRadius: 3,
+                                pointHoverRadius: 6,
+                                pointBackgroundColor: oceanColors.coral,
+                                pointBorderColor: '#fff',
+                                pointBorderWidth: 1,
+                                fill: false,
+                                tension: 0.4
+                            },
+                            {
+                                label: 'Te (Energy Period)',
+                                data: [],
+                                borderColor: oceanColors.golden,
+                                backgroundColor: oceanColors.golden + '20',
+                                borderWidth: 2.5,
+                                pointRadius: 3,
+                                pointHoverRadius: 6,
+                                pointBackgroundColor: oceanColors.golden,
+                                pointBorderColor: '#fff',
+                                pointBorderWidth: 1,
+                                fill: false,
+                                tension: 0.4
+                            }
+                        ]
+                    },
+                    options: {
+                        ...oceanChartOptions,
+                        scales: {
+                            ...oceanChartOptions.scales,
+                            y: {
+                                ...oceanChartOptions.scales.y,
+                                title: {
+                                    display: true,
+                                    text: 'Period (s)',
+                                    color: 'rgba(144, 224, 239, 0.9)',
+                                    font: { size: 11, weight: '500' }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            // Height Trend Chart (Hm0, Hmean)
+            const heightCtx = document.getElementById('heightTrendChart');
+            if (heightCtx) {
+                heightTrendChart = new Chart(heightCtx, {
+                    type: 'line',
+                    data: {
+                        labels: [],
+                        datasets: [
+                            {
+                                label: 'Hm0 (Significant)',
+                                data: [],
+                                borderColor: oceanColors.cyan,
+                                backgroundColor: oceanColors.cyan + '30',
+                                borderWidth: 2.5,
+                                pointRadius: 4,
+                                pointHoverRadius: 7,
+                                pointBackgroundColor: oceanColors.cyan,
+                                pointBorderColor: '#fff',
+                                pointBorderWidth: 2,
+                                fill: true,
+                                tension: 0.4
+                            },
+                            {
+                                label: 'Hmean (Average)',
+                                data: [],
+                                borderColor: oceanColors.violet,
+                                backgroundColor: oceanColors.violet + '20',
+                                borderWidth: 2.5,
+                                pointRadius: 4,
+                                pointHoverRadius: 7,
+                                pointBackgroundColor: oceanColors.violet,
+                                pointBorderColor: '#fff',
+                                pointBorderWidth: 2,
+                                fill: true,
+                                tension: 0.4
+                            }
+                        ]
+                    },
+                    options: {
+                        ...oceanChartOptions,
+                        scales: {
+                            ...oceanChartOptions.scales,
+                            y: {
+                                ...oceanChartOptions.scales.y,
+                                title: {
+                                    display: true,
+                                    text: 'Height (m)',
+                                    color: 'rgba(144, 224, 239, 0.9)',
+                                    font: { size: 11, weight: '500' }
+                                },
+                                beginAtZero: true
+                            }
+                        }
+                    }
+                });
+            }
+
+            // Frequency Trend Chart (fp, fm, fz, fe)
+            const freqCtx = document.getElementById('freqTrendChart');
+            if (freqCtx) {
+                freqParamTrendChart = new Chart(freqCtx, {
+                    type: 'line',
+                    data: {
+                        labels: [],
+                        datasets: [
+                            {
+                                label: 'fp (Peak)',
+                                data: [],
+                                borderColor: oceanColors.cyan,
+                                backgroundColor: oceanColors.cyan + '20',
+                                borderWidth: 2,
+                                pointRadius: 3,
+                                pointHoverRadius: 5,
+                                pointBackgroundColor: oceanColors.cyan,
+                                fill: false,
+                                tension: 0.4
+                            },
+                            {
+                                label: 'fm (Mean)',
+                                data: [],
+                                borderColor: oceanColors.seafoam,
+                                backgroundColor: oceanColors.seafoam + '20',
+                                borderWidth: 2,
+                                pointRadius: 3,
+                                pointHoverRadius: 5,
+                                pointBackgroundColor: oceanColors.seafoam,
+                                fill: false,
+                                tension: 0.4
+                            },
+                            {
+                                label: 'fz (Zero-Cross)',
+                                data: [],
+                                borderColor: oceanColors.rose,
+                                backgroundColor: oceanColors.rose + '20',
+                                borderWidth: 2,
+                                pointRadius: 3,
+                                pointHoverRadius: 5,
+                                pointBackgroundColor: oceanColors.rose,
+                                fill: false,
+                                tension: 0.4
+                            },
+                            {
+                                label: 'fe (Energy)',
+                                data: [],
+                                borderColor: oceanColors.golden,
+                                backgroundColor: oceanColors.golden + '20',
+                                borderWidth: 2,
+                                pointRadius: 3,
+                                pointHoverRadius: 5,
+                                pointBackgroundColor: oceanColors.golden,
+                                fill: false,
+                                tension: 0.4
+                            }
+                        ]
+                    },
+                    options: {
+                        ...oceanChartOptions,
+                        scales: {
+                            ...oceanChartOptions.scales,
+                            y: {
+                                ...oceanChartOptions.scales.y,
+                                title: {
+                                    display: true,
+                                    text: 'Frequency (Hz)',
+                                    color: 'rgba(144, 224, 239, 0.9)',
+                                    font: { size: 11, weight: '500' }
+                                },
+                                beginAtZero: true
+                            }
+                        }
+                    }
+                });
+            }
+
+            console.log('[Dashboard] Spectrum trend charts initialized');
+        }
+
+        // ==================== 方向谱图表初始化 ====================
+        function initDirectionalSpectrumCharts() {
+            // Ocean-themed chart colors
+            const oceanColors = {
+                cyan: '#00d4ff',
+                seafoam: '#00f5d4',
+                coral: '#ff6b9d',
+                golden: '#ffd93d'
+            };
+
+            // Common chart options for ocean theme
+            const oceanChartOptions = {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: { duration: 300 },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: 'rgba(13, 33, 55, 0.95)',
+                        titleColor: '#00d4ff',
+                        bodyColor: 'rgba(255, 255, 255, 0.9)',
+                        borderColor: 'rgba(0, 212, 255, 0.3)',
+                        borderWidth: 1
+                    }
+                },
+                scales: {
+                    x: {
+                        grid: { color: 'rgba(0, 212, 255, 0.1)' },
+                        ticks: { color: 'rgba(144, 224, 239, 0.8)', font: { size: 10 } }
+                    },
+                    y: {
+                        grid: { color: 'rgba(0, 212, 255, 0.1)' },
+                        ticks: { color: 'rgba(144, 224, 239, 0.8)', font: { size: 10 } }
+                    }
+                }
+            };
+
+            // Directional Distribution Chart (1D - integrated over frequency)
+            const dirDistCtx = document.getElementById('directionalDistChart');
+            if (dirDistCtx) {
+                directionalDistChart = new Chart(dirDistCtx, {
+                    type: 'line',
+                    data: {
+                        labels: [],
+                        datasets: [{
+                            label: 'Directional Energy',
+                            data: [],
+                            borderColor: oceanColors.cyan,
+                            backgroundColor: oceanColors.cyan + '40',
+                            borderWidth: 2,
+                            pointRadius: 0,
+                            fill: true,
+                            tension: 0.4
+                        }]
+                    },
+                    options: {
+                        ...oceanChartOptions,
+                        scales: {
+                            ...oceanChartOptions.scales,
+                            x: {
+                                ...oceanChartOptions.scales.x,
+                                title: { display: true, text: 'Direction (deg)', color: 'rgba(144, 224, 239, 0.9)' }
+                            },
+                            y: {
+                                ...oceanChartOptions.scales.y,
+                                title: { display: true, text: 'Energy', color: 'rgba(144, 224, 239, 0.9)' },
+                                beginAtZero: true
+                            }
+                        }
+                    }
+                });
+            }
+
+            // DIWASP Frequency Spectrum Chart
+            const diwaspFreqCtx = document.getElementById('diwaspFreqChart');
+            if (diwaspFreqCtx) {
+                diwaspFreqChart = new Chart(diwaspFreqCtx, {
+                    type: 'line',
+                    data: {
+                        labels: [],
+                        datasets: [{
+                            label: 'S1D',
+                            data: [],
+                            borderColor: oceanColors.seafoam,
+                            backgroundColor: oceanColors.seafoam + '30',
+                            borderWidth: 2,
+                            pointRadius: 0,
+                            fill: true,
+                            tension: 0.4
+                        }]
+                    },
+                    options: {
+                        ...oceanChartOptions,
+                        scales: {
+                            ...oceanChartOptions.scales,
+                            x: {
+                                ...oceanChartOptions.scales.x,
+                                title: { display: true, text: 'Frequency (Hz)', color: 'rgba(144, 224, 239, 0.9)' }
+                            },
+                            y: {
+                                ...oceanChartOptions.scales.y,
+                                title: { display: true, text: 'S(f) (m^2/Hz)', color: 'rgba(144, 224, 239, 0.9)' },
+                                beginAtZero: true
+                            }
+                        }
+                    }
+                });
+            }
+
+            console.log('[Dashboard] Directional spectrum charts initialized');
+        }
+
+        // ==================== 2D方向谱热力图绘制 ====================
+        function draw2DDirectionalSpectrum(spectrumData) {
+            const canvas = document.getElementById('directionalSpectrumChart');
+            const noDataDiv = document.getElementById('directionalSpectrumNoData');
+
+            if (!canvas) return;
+
+            const ctx = canvas.getContext('2d');
+            const container = canvas.parentElement;
+
+            // Set canvas size to match container
+            canvas.width = container.clientWidth - 30;
+            canvas.height = container.clientHeight - 30;
+
+            if (!spectrumData || !spectrumData.S2D || !spectrumData.freqs || !spectrumData.dirs) {
+                // Show no data message
+                canvas.style.display = 'none';
+                if (noDataDiv) noDataDiv.style.display = 'flex';
+                return;
+            }
+
+            // Hide no data message, show canvas
+            canvas.style.display = 'block';
+            if (noDataDiv) noDataDiv.style.display = 'none';
+
+            const S2D = spectrumData.S2D;
+            const freqs = spectrumData.freqs;
+            const dirs = spectrumData.dirs;
+
+            const nFreqs = freqs.length;
+            const nDirs = dirs.length;
+
+            // Find min/max for color scaling
+            let minVal = Infinity, maxVal = -Infinity;
+            for (let i = 0; i < nFreqs; i++) {
+                for (let j = 0; j < nDirs; j++) {
+                    const val = S2D[i][j];
+                    if (val < minVal) minVal = val;
+                    if (val > maxVal) maxVal = val;
+                }
+            }
+
+            // Prevent division by zero
+            if (maxVal === minVal) maxVal = minVal + 1;
+
+            // Calculate cell dimensions
+            const marginLeft = 60;
+            const marginRight = 20;
+            const marginTop = 20;
+            const marginBottom = 50;
+
+            const plotWidth = canvas.width - marginLeft - marginRight;
+            const plotHeight = canvas.height - marginTop - marginBottom;
+
+            const cellWidth = plotWidth / nDirs;
+            const cellHeight = plotHeight / nFreqs;
+
+            // Clear canvas
+            ctx.fillStyle = 'rgba(10, 22, 40, 1)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Draw heatmap cells
+            for (let i = 0; i < nFreqs; i++) {
+                for (let j = 0; j < nDirs; j++) {
+                    const val = S2D[i][j];
+                    const normalizedVal = (val - minVal) / (maxVal - minVal);
+
+                    // Color gradient: blue -> cyan -> green -> yellow -> red
+                    const color = getHeatmapColor(normalizedVal);
+
+                    const x = marginLeft + j * cellWidth;
+                    const y = marginTop + (nFreqs - 1 - i) * cellHeight;  // Flip Y-axis
+
+                    ctx.fillStyle = color;
+                    ctx.fillRect(x, y, cellWidth + 1, cellHeight + 1);
+                }
+            }
+
+            // Draw axes
+            ctx.strokeStyle = 'rgba(0, 212, 255, 0.5)';
+            ctx.lineWidth = 1;
+
+            // Y-axis (frequency)
+            ctx.beginPath();
+            ctx.moveTo(marginLeft, marginTop);
+            ctx.lineTo(marginLeft, marginTop + plotHeight);
+            ctx.stroke();
+
+            // X-axis (direction)
+            ctx.beginPath();
+            ctx.moveTo(marginLeft, marginTop + plotHeight);
+            ctx.lineTo(marginLeft + plotWidth, marginTop + plotHeight);
+            ctx.stroke();
+
+            // Axis labels
+            ctx.fillStyle = 'rgba(144, 224, 239, 0.9)';
+            ctx.font = '11px sans-serif';
+
+            // X-axis labels (direction)
+            const dirStep = Math.ceil(nDirs / 8);
+            for (let j = 0; j < nDirs; j += dirStep) {
+                const x = marginLeft + j * cellWidth + cellWidth / 2;
+                const label = Math.round(dirs[j]) + ' deg';
+                ctx.textAlign = 'center';
+                ctx.fillText(label, x, marginTop + plotHeight + 15);
+            }
+
+            // Y-axis labels (frequency)
+            const freqStep = Math.ceil(nFreqs / 6);
+            for (let i = 0; i < nFreqs; i += freqStep) {
+                const y = marginTop + (nFreqs - 1 - i) * cellHeight + cellHeight / 2;
+                const label = freqs[i].toFixed(2) + ' Hz';
+                ctx.textAlign = 'right';
+                ctx.fillText(label, marginLeft - 5, y + 4);
+            }
+
+            // Axis titles
+            ctx.font = '12px sans-serif';
+            ctx.fillStyle = 'rgba(0, 212, 255, 0.9)';
+            ctx.textAlign = 'center';
+            ctx.fillText('Direction (deg)', marginLeft + plotWidth / 2, canvas.height - 5);
+
+            ctx.save();
+            ctx.translate(15, marginTop + plotHeight / 2);
+            ctx.rotate(-Math.PI / 2);
+            ctx.fillText('Frequency (Hz)', 0, 0);
+            ctx.restore();
+        }
+
+        // Helper function: get color from heatmap gradient
+        function getHeatmapColor(value) {
+            // Blue -> Cyan -> Green -> Yellow -> Red gradient
+            const colors = [
+                { r: 0, g: 0, b: 255 },      // Blue (0.0)
+                { r: 0, g: 255, b: 255 },    // Cyan (0.25)
+                { r: 0, g: 255, b: 0 },      // Green (0.5)
+                { r: 255, g: 255, b: 0 },    // Yellow (0.75)
+                { r: 255, g: 0, b: 0 }       // Red (1.0)
+            ];
+
+            const idx = Math.min(Math.floor(value * 4), 3);
+            const t = (value * 4) - idx;
+
+            const c1 = colors[idx];
+            const c2 = colors[idx + 1];
+
+            const r = Math.round(c1.r + (c2.r - c1.r) * t);
+            const g = Math.round(c1.g + (c2.g - c1.g) * t);
+            const b = Math.round(c1.b + (c2.b - c1.b) * t);
+
+            return `rgb(${r}, ${g}, ${b})`;
+        }
+
+        // ==================== 方向谱数据更新 ====================
+        function updateDirectionalSpectrumDisplay(data) {
+            const results = data.results || {};
+            const spectrum = data.spectrum || {};
+            const directional = spectrum.directional || {};
+
+            // Update directional parameters
+            const waveDir = document.getElementById('dirWaveDirection');
+            const meanDir = document.getElementById('dirMeanDirection');
+            const spread = document.getElementById('dirSpread');
+            const dirAtPeak = document.getElementById('dirAtPeak');
+            const statusDot = document.getElementById('diwaspStatusDot');
+            const statusText = document.getElementById('diwaspStatusText');
+            const methodBadge = document.getElementById('diwaspMethod');
+
+            if (waveDir) waveDir.innerHTML = Utils.formatNumber(results.wave_direction, 1) + '<span class="spectrum-param-unit">deg</span>';
+            if (meanDir) meanDir.innerHTML = Utils.formatNumber(results.mean_direction, 1) + '<span class="spectrum-param-unit">deg</span>';
+            if (spread) spread.innerHTML = Utils.formatNumber(results.directional_spread, 1) + '<span class="spectrum-param-unit">deg</span>';
+            if (dirAtPeak) dirAtPeak.innerHTML = Utils.formatNumber(results.direction_at_peak || results.wave_direction, 1) + '<span class="spectrum-param-unit">deg</span>';
+
+            // Update DIWASP status
+            const diwaspEnabled = results.diwasp_enabled;
+            const diwaspSuccess = results.diwasp_success;
+
+            if (statusDot && statusText) {
+                if (diwaspSuccess) {
+                    statusDot.style.background = '#10b981';
+                    statusText.textContent = '方向谱分析';
+                    statusText.style.color = '#10b981';
+                } else if (diwaspEnabled) {
+                    statusDot.style.background = '#f59e0b';
+                    statusText.textContent = '等待数据';
+                    statusText.style.color = '#f59e0b';
+                } else {
+                    statusDot.style.background = '#6b7280';
+                    statusText.textContent = '未启用';
+                    statusText.style.color = '#6b7280';
+                }
+            }
+
+            if (methodBadge) {
+                methodBadge.textContent = results.diwasp_method || '--';
+            }
+
+            // Update 2D spectrum heatmap
+            if (directional.S2D) {
+                draw2DDirectionalSpectrum(directional);
+            }
+
+            // Update directional distribution chart (1D - direction)
+            if (directionalDistChart && directional.S2D && directional.dirs) {
+                const nFreqs = directional.S2D.length;
+                const nDirs = directional.dirs.length;
+
+                // Integrate over frequency to get directional distribution
+                const dirDist = new Array(nDirs).fill(0);
+                for (let j = 0; j < nDirs; j++) {
+                    for (let i = 0; i < nFreqs; i++) {
+                        dirDist[j] += directional.S2D[i][j];
+                    }
+                }
+
+                directionalDistChart.data.labels = directional.dirs.map(d => Math.round(d));
+                directionalDistChart.data.datasets[0].data = dirDist;
+                directionalDistChart.update('none');
+            }
+
+            // Update DIWASP frequency spectrum chart
+            if (diwaspFreqChart && directional.S1D && directional.freqs) {
+                diwaspFreqChart.data.labels = directional.freqs.map(f => f.toFixed(3));
+                diwaspFreqChart.data.datasets[0].data = directional.S1D;
+                diwaspFreqChart.update('none');
+            }
+        }
+
+        // ==================== 波浪谱趋势数据更新 ====================
+        function updateSpectrumTrendCharts(results) {
+            if (!results) return;
+
+            const timestamp = new Date();
+
+            // Add new data point
+            spectrumTrendData.timestamps.push(timestamp);
+
+            // Period parameters
+            spectrumTrendData.Tp.push(results.Tp || null);
+            spectrumTrendData.Tm01.push(results.Tm01 || null);
+            spectrumTrendData.Tz.push(results.Tz || null);
+            spectrumTrendData.Te.push(results.Te || null);
+
+            // Height parameters
+            spectrumTrendData.Hm0.push(results.Hm0 || null);
+            spectrumTrendData.Hmean.push(results.Hmean || null);
+
+            // Frequency parameters (calculate from periods if not available)
+            const fp = results.fp || results.peak_frequency || (results.Tp ? 1/results.Tp : null);
+            const fm = results.fm || (results.Tm01 ? 1/results.Tm01 : null);
+            const fz = results.fz || (results.Tz ? 1/results.Tz : null);
+            const fe = results.fe || (results.Te ? 1/results.Te : null);
+
+            spectrumTrendData.fp.push(fp);
+            spectrumTrendData.fm.push(fm);
+            spectrumTrendData.fz.push(fz);
+            spectrumTrendData.fe.push(fe);
+
+            // Limit data points
+            if (spectrumTrendData.timestamps.length > MAX_TREND_POINTS) {
+                spectrumTrendData.timestamps.shift();
+                spectrumTrendData.Tp.shift();
+                spectrumTrendData.Tm01.shift();
+                spectrumTrendData.Tz.shift();
+                spectrumTrendData.Te.shift();
+                spectrumTrendData.Hm0.shift();
+                spectrumTrendData.Hmean.shift();
+                spectrumTrendData.fp.shift();
+                spectrumTrendData.fm.shift();
+                spectrumTrendData.fz.shift();
+                spectrumTrendData.fe.shift();
+            }
+
+            // Update Period Trend Chart
+            if (periodTrendChart) {
+                periodTrendChart.data.labels = spectrumTrendData.timestamps;
+                periodTrendChart.data.datasets[0].data = spectrumTrendData.Tp;
+                periodTrendChart.data.datasets[1].data = spectrumTrendData.Tm01;
+                periodTrendChart.data.datasets[2].data = spectrumTrendData.Tz;
+                periodTrendChart.data.datasets[3].data = spectrumTrendData.Te;
+                periodTrendChart.update('none');
+            }
+
+            // Update Height Trend Chart
+            if (heightTrendChart) {
+                heightTrendChart.data.labels = spectrumTrendData.timestamps;
+                heightTrendChart.data.datasets[0].data = spectrumTrendData.Hm0;
+                heightTrendChart.data.datasets[1].data = spectrumTrendData.Hmean;
+                heightTrendChart.update('none');
+            }
+
+            // Update Frequency Trend Chart
+            if (freqParamTrendChart) {
+                freqParamTrendChart.data.labels = spectrumTrendData.timestamps;
+                freqParamTrendChart.data.datasets[0].data = spectrumTrendData.fp;
+                freqParamTrendChart.data.datasets[1].data = spectrumTrendData.fm;
+                freqParamTrendChart.data.datasets[2].data = spectrumTrendData.fz;
+                freqParamTrendChart.data.datasets[3].data = spectrumTrendData.fe;
+                freqParamTrendChart.update('none');
+            }
+
+            // Update current value displays
+            updateSpectrumParamDisplays(results, fp, fm, fz, fe);
+        }
+
+        // Update the spectrum parameter value displays
+        function updateSpectrumParamDisplays(results, fp, fm, fz, fe) {
+            // Period parameters
+            const specTpElem = document.getElementById('specTp');
+            const specTm01Elem = document.getElementById('specTm01');
+            const specTzElem = document.getElementById('specTz');
+            const specTeElem = document.getElementById('specTe');
+
+            if (specTpElem) specTpElem.innerHTML = Utils.formatNumber(results.Tp, 2) + '<span class="spectrum-param-unit">s</span>';
+            if (specTm01Elem) specTm01Elem.innerHTML = Utils.formatNumber(results.Tm01, 2) + '<span class="spectrum-param-unit">s</span>';
+            if (specTzElem) specTzElem.innerHTML = Utils.formatNumber(results.Tz, 2) + '<span class="spectrum-param-unit">s</span>';
+            if (specTeElem) specTeElem.innerHTML = Utils.formatNumber(results.Te, 2) + '<span class="spectrum-param-unit">s</span>';
+
+            // Height parameters
+            const specHm0Elem = document.getElementById('specHm0');
+            const specHmeanElem = document.getElementById('specHmean');
+
+            if (specHm0Elem) specHm0Elem.innerHTML = Utils.formatNumber(results.Hm0, 3) + '<span class="spectrum-param-unit">m</span>';
+            if (specHmeanElem) specHmeanElem.innerHTML = Utils.formatNumber(results.Hmean, 3) + '<span class="spectrum-param-unit">m</span>';
+
+            // Frequency parameters
+            const specFpElem = document.getElementById('specFp');
+            const specFmElem = document.getElementById('specFm');
+            const specFzElem = document.getElementById('specFz');
+            const specFeElem = document.getElementById('specFe');
+
+            if (specFpElem) specFpElem.innerHTML = Utils.formatNumber(fp, 3) + '<span class="spectrum-param-unit">Hz</span>';
+            if (specFmElem) specFmElem.innerHTML = Utils.formatNumber(fm, 3) + '<span class="spectrum-param-unit">Hz</span>';
+            if (specFzElem) specFzElem.innerHTML = Utils.formatNumber(fz, 3) + '<span class="spectrum-param-unit">Hz</span>';
+            if (specFeElem) specFeElem.innerHTML = Utils.formatNumber(fe, 3) + '<span class="spectrum-param-unit">Hz</span>';
+        }
+
+        // ==================== WebSocket 连接 ====================
+        function connectWebSocket() {
+            // 监听连接状态
+            wsClient.onConnectionStateChange((state, event) => {
+                const indicator = document.getElementById('wsIndicator');
+                const status = document.getElementById('wsStatus');
+
+                if (state === 'connected') {
+                    wsConnected = true;
+                    indicator.classList.add('online');
+                    indicator.classList.remove('offline');
+                    status.textContent = '已连接';
+                    Utils.showToast('WebSocket连接成功', 'success');
+                } else if (state === 'disconnected') {
+                    wsConnected = false;
+                    indicator.classList.add('offline');
+                    indicator.classList.remove('online');
+                    status.textContent = '已断开';
+                    // 断开时立即获取一次数据
+                    loadInitialData().catch(e => console.error('[WS] Fallback load failed:', e));
+                    Utils.showToast('WebSocket连接断开，正在重连...', 'warning');
+                } else if (state === 'error') {
+                    wsConnected = false;
+                    indicator.classList.add('offline');
+                    indicator.classList.remove('online');
+                    status.textContent = '连接错误';
+                }
+            });
+
+            // 注册消息处理器
+            wsClient.on('init', (data) => {
+                console.log('[WebSocket] Initial data received');
+                console.log('[WebSocket] - Has analyzed data:', !!data.analyzed);
+                console.log('[WebSocket] - Has raw data:', !!data.raw);
+                console.log('[WebSocket] - Has status:', !!data.status);
+                if (data.analyzed) {
+                    console.log('[WebSocket] - Data source:', data.analyzed._from_database ? 'DATABASE' : 'MQTT/Memory');
+                    updateAnalyzedData(data.analyzed);
+                } else {
+                    // 没有分析数据时，显示友好提示
+                    showNoAnalysisDataMessage();
+                }
+                if (data.raw) updateRawData(data.raw);
+                // init 消息的 status 是聚合对象 {collector: {...}, analyzer: {...}}
+                if (data.status) {
+                    if (data.status.collector) {
+                        updateSystemStatus(data.status.collector);
+                    }
+                    if (data.status.analyzer) {
+                        updateSystemStatus(data.status.analyzer);
+                        // 立即更新进度条
+                        console.log('[WebSocket] Init message with analyzer status, updating progress...');
+                        updateAnalysisProgress(data.status.analyzer);
+                    } else {
+                        // 没有 analyzer 状态，显示等待状态
+                        showProgressWaitingState();
+                    }
+                }
+            });
+
+            wsClient.on('analyzed', (data) => {
+                updateAnalyzedData(data);
+                // 分析完成，重置倒计时
+                countdownSeconds = lastAnalyzerStatus?.analysis_interval || 300;
+            });
+
+            wsClient.on('raw', (data) => {
+                updateRawData(data);
+                updateRealtimeChart(data);
+            });
+
+            wsClient.on('status', (data) => {
+                updateSystemStatus(data);
+                // 如果是 analyzer 状态，立即更新进度条
+                if (data && data.component === 'analyzer') {
+                    console.log('[WebSocket] Analyzer status received, updating progress...');
+                    updateAnalysisProgress(data);
+                }
+            });
+
+            // 开始连接
+            wsClient.connect();
+        }
+
+        // ==================== 数据加载 ====================
+        async function loadInitialData() {
+            try {
+                console.log('[Dashboard] Loading initial data from API...');
+                const data = await api.getLatest();
+                console.log('[Dashboard] API response:', data);
+
+                if (!data) {
+                    console.warn('[Dashboard] No data returned');
+                    return;
+                }
+
+                // 安全更新各部分数据
+                try {
+                    if (data.analyzed) {
+                        updateAnalyzedData(data.analyzed);
+                        // 初始化时间戳，避免轮询时重复更新相同数据
+                        lastAnalyzedTimestamp = data.analyzed.metadata?.end_time || data.analyzed.timestamp;
+                    } else {
+                        // 没有分析数据时，显示友好提示
+                        showNoAnalysisDataMessage();
+                    }
+                } catch (e) { console.error('[Dashboard] updateAnalyzedData error:', e); }
+
+                try {
+                    if (data.raw) updateRawData(data.raw);
+                } catch (e) { console.error('[Dashboard] updateRawData error:', e); }
+
+                try {
+                    if (data.status) {
+                        if (data.status.collector) updateSystemStatus(data.status.collector);
+                        if (data.status.analyzer) {
+                            updateSystemStatus(data.status.analyzer);
+                            updateAnalysisProgress(data.status.analyzer);  // 首次加载时也更新进度条
+                            console.log('[Dashboard] Analyzer status available on initial load');
+                        } else {
+                            // 没有 analyzer 状态时，显示等待初始化的状态
+                            showProgressWaitingState();
+                            console.log('[Dashboard] No analyzer status on initial load, will rely on progress polling');
+                            // 注意：不再使用 setTimeout 重试，而是依赖 startProgressPolling() 持续轮询
+                            // startProgressPolling() 会每1.5秒轮询，直到获取到状态
+                        }
+                    } else {
+                        // 没有任何状态数据时，显示等待初始化的状态并快速重试
+                        showProgressWaitingState();
+                        console.log('[Dashboard] No status data on initial load, retrying in 500ms...');
+                        setTimeout(async () => {
+                            try {
+                                const retryData = await api.getLatest();
+                                if (retryData?.status?.analyzer) {
+                                    console.log('[Dashboard] Retry successful, got analyzer status');
+                                    updateAnalysisProgress(retryData.status.analyzer);
+                                }
+                            } catch (e) {
+                                console.debug('[Dashboard] Retry failed:', e.message);
+                            }
+                        }, 500);
+                    }
+                } catch (e) { console.error('[Dashboard] updateSystemStatus error:', e); }
+
+                console.log('[Dashboard] Initial data loaded successfully');
+            } catch (error) {
+                // 完全静默处理，不显示任何错误提示
+                console.warn('[Dashboard] Data loading issue:', error.message);
+            }
+        }
+
+        // 显示"无分析数据"友好提示
+        function showNoAnalysisDataMessage() {
+            const analysisTimeElem = document.getElementById('analysisTime');
+            if (analysisTimeElem) {
+                analysisTimeElem.textContent = '等待第一次分析...';
+                analysisTimeElem.style.color = '#f59e0b';
+                analysisTimeElem.title = '系统正在采集数据，完成后将自动进行第一次波浪分析';
+            }
+            console.log('[Dashboard] No analysis data available yet - waiting for first analysis');
+        }
+
+        // 显示进度条等待状态（当没有 analyzer 状态数据时）
+        function showProgressWaitingState() {
+            const progressCard = document.getElementById('analysisProgressCard');
+            const progressBar = document.getElementById('progressBar');
+            const progressPercent = document.getElementById('progressPercent');
+            const currentSamples = document.getElementById('currentSamples');
+            const requiredSamples = document.getElementById('requiredSamples');
+            const progressStatus = document.getElementById('progressStatus');
+            const progressMessage = document.getElementById('progressMessage');
+            const cardHeader = progressCard?.querySelector('.card-header span:first-child');
+
+            if (!progressBar || !progressCard) return;
+
+            // 显示进度卡片
+            progressCard.style.display = 'block';
+
+            // 设置等待初始化的状态
+            if (cardHeader) cardHeader.textContent = '🔄 系统启动中';
+            progressBar.style.width = '0%';
+            progressBar.style.background = 'linear-gradient(90deg, #FF9800, #FFB74D)';
+            progressPercent.textContent = '0%';
+            currentSamples.textContent = '0';
+            requiredSamples.textContent = '--';
+            progressStatus.textContent = '等待分析服务启动...';
+            progressMessage.textContent = '正在连接分析服务，请稍候...';
+
+            console.log('[Dashboard] Showing progress waiting state - no analyzer status yet');
+        }
+
+        async function refreshData() {
+            await loadInitialData();
+            Utils.showToast('数据已刷新', 'success');
+        }
+
+        // ==================== 阵列配置管理 ====================
+        async function loadArrayConfig() {
+            try {
+                const response = await fetch('/api/config');
+                const data = await response.json();
+
+                const arrayHeading = data.radar?.array_heading ?? 0;
+                const arrayHeight = data.radar?.array_height ?? 5;
+
+                // 更新显示（用于系统配置页面）
+                const currentHeading = document.getElementById('currentArrayHeading');
+                const currentHeight = document.getElementById('currentArrayHeight');
+                if (currentHeading) currentHeading.textContent = arrayHeading.toFixed(1);
+                if (currentHeight) currentHeight.textContent = arrayHeight.toFixed(2);
+
+                // 更新输入框（用于系统配置页面）
+                const headingInput = document.getElementById('arrayHeading');
+                const heightInput = document.getElementById('arrayHeight');
+                if (headingInput) headingInput.value = arrayHeading.toFixed(1);
+                if (heightInput) heightInput.value = arrayHeight.toFixed(2);
+            } catch (error) {
+                console.error('加载阵列配置失败:', error);
+            }
+        }
+
+        async function updateArrayConfig() {
+            const heading = parseFloat(document.getElementById('arrayHeading').value);
+            const height = parseFloat(document.getElementById('arrayHeight').value);
+
+            // 验证输入
+            if (isNaN(heading) || heading < 0 || heading > 360) {
+                showConfigStatus('❌ 阵列朝向角必须在0-360度之间', 'error');
+                return;
+            }
+            if (isNaN(height) || height < 0 || height > 100) {
+                showConfigStatus('❌ 阵列高度必须在0-100米之间', 'error');
+                return;
+            }
+
+            try {
+                const payload = {
+                    analysis: {
+                        array_heading: heading,
+                        array_height: height
+                    }
+                };
+
+                const response = await fetch('/api/config/update', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify(payload)
+                });
+
+                if (response.ok) {
+                    showConfigStatus('✅ 配置已更新！重启analyzer服务后生效', 'success');
+                    // 更新当前显示
+                    document.getElementById('currentArrayHeading').textContent = heading.toFixed(1);
+                    document.getElementById('currentArrayHeight').textContent = height.toFixed(2);
+
+                    // 3秒后自动加载最新配置
+                    setTimeout(loadArrayConfig, 3000);
+                } else {
+                    const error = await response.json();
+                    showConfigStatus('❌ 更新失败: ' + (error.message || '未知错误'), 'error');
+                }
+            } catch (error) {
+                console.error('更新配置失败:', error);
+                showConfigStatus('❌ 网络错误，请稍后重试', 'error');
+            }
+        }
+
+        function showConfigStatus(message, type) {
+            const statusDiv = document.getElementById('configStatus');
+            statusDiv.textContent = message;
+            statusDiv.style.color = type === 'success' ? '#28a745' : '#dc3545';
+            statusDiv.style.fontWeight = '600';
+
+            // 5秒后清除消息
+            setTimeout(() => {
+                statusDiv.textContent = '';
+            }, 5000);
+        }
+
+        // ==================== 潮位数据加载 ====================
+        async function loadTideData() {
+            try {
+                const response = await fetch('/api/tide/current');
+                const data = await response.json();
+
+                if (data.success && data.data) {
+                    const tideData = data.data;
+
+                    // 更新当前潮位显示
+                    if (tideData.observed) {
+                        const tideLevel = tideData.observed.tide_level;
+                        document.getElementById('currentTideLevel').textContent =
+                            Utils.formatNumber(tideLevel, 3) + ' m';
+                        // 更新时间
+                        const updateTime = new Date(tideData.observed.time);
+                        document.getElementById('tideUpdateTime').textContent =
+                            updateTime.toLocaleTimeString('zh-CN');
+
+                        // 更新卡片头部时间
+                        const tideAnalysisTimeElem = document.getElementById('tideAnalysisTime');
+                        if (tideAnalysisTimeElem) {
+                            const timeStr = updateTime.toLocaleString('zh-CN', {
+                                month: '2-digit',
+                                day: '2-digit',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                            });
+                            tideAnalysisTimeElem.textContent = timeStr;
+                            tideAnalysisTimeElem.title = `潮位观测时间: ${updateTime.toLocaleString('zh-CN')}`;
+                        }
+
+                        // 显示阵列高度
+                        document.getElementById('arrayHeightDisplay').textContent =
+                            Utils.formatNumber(tideData.observed.array_height, 2) + ' m';
+                    } else {
+                        // 无观测数据
+                        document.getElementById('currentTideLevel').textContent = '-- m';
+                        document.getElementById('tideUpdateTime').textContent = '无数据';
+                    }
+                } else {
+                    console.log('潮位数据暂不可用');
+                }
+            } catch (error) {
+                console.error('获取潮位数据失败:', error);
+            }
+        }
+
+        // ==================== 数据更新函数 ====================
+        function updateAnalyzedData(data) {
+            try {
+                console.log('[Dashboard] Updating analyzed data:', data._from_database ? 'from DATABASE' : 'from MQTT');
+                console.log('[Dashboard] Data keys:', Object.keys(data));
+                console.log('[Dashboard] Results keys:', Object.keys(data.results || {}));
+
+                const results = data.results || {};
+                const metadata = data.metadata || {};
+
+            // 更新波浪分析时间（优先使用分析结束时间）
+            const analysisTimeElem = document.getElementById('analysisTime');
+            if (analysisTimeElem) {
+                const timeValue = metadata.end_time || metadata.collection_end_time || data.timestamp;
+                if (timeValue) {
+                    const date = new Date(timeValue);
+                    let displayText = date.toLocaleString('zh-CN', {
+                        month: '2-digit',
+                        day: '2-digit',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit'
+                    });
+
+                    // 如果数据来自数据库，添加数据源指示器
+                    if (data._from_database) {
+                        displayText += ' [DB]';
+                        analysisTimeElem.style.color = '#f59e0b';  // Orange color for database data
+                        analysisTimeElem.title = '历史数据（从数据库加载，系统已重启后恢复显示）';
+                    } else {
+                        analysisTimeElem.style.color = '#2196F3';
+                        analysisTimeElem.title = '最新波浪分析完成时间（实时更新）';
+                    }
+
+                    analysisTimeElem.textContent = displayText;
+                }
+            }
+
+            // 更新主要参数（顶部大字显示）
+            const hm0MainElem = document.getElementById('hm0_main');
+            if (hm0MainElem) hm0MainElem.textContent = Utils.formatNumber(results.Hm0, 3);
+            const hsElem = document.getElementById('hs');
+            if (hsElem) hsElem.textContent = Utils.formatNumber(results.Hs || results.Hm0, 3);
+            const tpElem = document.getElementById('tp');
+            if (tpElem) tpElem.textContent = Utils.formatNumber(results.Tp, 2);
+            const thetaElem = document.getElementById('theta');
+            if (thetaElem) thetaElem.textContent = Utils.formatNumber(results.wave_direction, 1);
+
+            // 更新卡片时间显示
+            const timeValue = metadata.end_time || metadata.collection_end_time || data.timestamp;
+            if (timeValue) {
+                const date = new Date(timeValue);
+                const timeStr = date.toLocaleString('zh-CN', {
+                    month: '2-digit',
+                    day: '2-digit',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                });
+
+                // 更新时域分析时间
+                const timeDomainTimeElem = document.getElementById('timeDomainAnalysisTime');
+                if (timeDomainTimeElem) {
+                    timeDomainTimeElem.textContent = timeStr;
+                    timeDomainTimeElem.title = `分析时间: ${date.toLocaleString('zh-CN')}`;
+                }
+
+                // 更新频谱分析时间
+                const spectrumTimeElem = document.getElementById('spectrumAnalysisTime');
+                if (spectrumTimeElem) {
+                    spectrumTimeElem.textContent = timeStr;
+                    spectrumTimeElem.title = `分析时间: ${date.toLocaleString('zh-CN')}`;
+                }
+            }
+
+            // 更新零交叉法波浪参数
+            const hmaxElem = document.getElementById('hmax');
+            if (hmaxElem) hmaxElem.textContent = Utils.formatNumber(results.Hmax, 3) + ' m';
+            const h110Elem = document.getElementById('h110');
+            if (h110Elem) h110Elem.textContent = Utils.formatNumber(results.H1_10, 3) + ' m';
+            const hsZcElem = document.getElementById('hs_zc');
+            if (hsZcElem) hsZcElem.textContent = Utils.formatNumber(results.Hs, 3) + ' m';
+            const hmeanElem = document.getElementById('hmean');
+            if (hmeanElem) hmeanElem.textContent = Utils.formatNumber(results.Hmean, 3) + ' m';
+            const tmaxElem = document.getElementById('tmax');
+            if (tmaxElem) tmaxElem.textContent = Utils.formatNumber(results.Tmax, 2) + ' s';
+            const t110Elem = document.getElementById('t110');
+            if (t110Elem) t110Elem.textContent = Utils.formatNumber(results.T1_10, 2) + ' s';
+            const tsElem = document.getElementById('ts');
+            if (tsElem) tsElem.textContent = Utils.formatNumber(results.Ts, 2) + ' s';
+            const tmeanElem = document.getElementById('tmean');
+            if (tmeanElem) tmeanElem.textContent = Utils.formatNumber(results.Tmean, 2) + ' s';
+            const waveCountElem = document.getElementById('waveCount');
+            if (waveCountElem) waveCountElem.textContent = results.wave_count ?? '--';
+            const meanLevelElem = document.getElementById('meanLevel');
+            if (meanLevelElem) meanLevelElem.textContent = Utils.formatNumber(results.mean_level, 1) + ' cm';
+
+            // 更新谱分析参数 - 完整版
+            // 波高参数
+            const hm0Elem = document.getElementById('hm0');
+            if (hm0Elem) hm0Elem.textContent = Utils.formatNumber(results.Hm0, 3) + ' m';
+            const hmeanSpecElem = document.getElementById('hmean_spec');
+            if (hmeanSpecElem) hmeanSpecElem.textContent = Utils.formatNumber(results.Hmean, 3) + ' m';
+
+            // 周期参数
+            const tpSpecElem = document.getElementById('tp_spec');
+            if (tpSpecElem) tpSpecElem.textContent = Utils.formatNumber(results.Tp, 2) + ' s';
+            const tm01SpecElem = document.getElementById('tm01_spec');
+            if (tm01SpecElem) tm01SpecElem.textContent = Utils.formatNumber(results.Tm01, 2) + ' s';
+            const tzSpecElem = document.getElementById('tz_spec');
+            if (tzSpecElem) tzSpecElem.textContent = Utils.formatNumber(results.Tz, 2) + ' s';
+            const teSpecElem = document.getElementById('te_spec');
+            if (teSpecElem) teSpecElem.textContent = Utils.formatNumber(results.Te, 2) + ' s';
+
+            // 频率参数 (从周期计算)
+            const fp = results.peak_frequency || (results.Tp ? 1/results.Tp : null);
+            const fm = results.fm || (results.Tm01 ? 1/results.Tm01 : null);
+            const fz = results.fz || (results.Tz ? 1/results.Tz : null);
+            const fe = results.fe || (results.Te ? 1/results.Te : null);
+
+            const fpElem = document.getElementById('fp');
+            if (fpElem) fpElem.textContent = Utils.formatNumber(fp, 3) + ' Hz';
+            const fmSpecElem = document.getElementById('fm_spec');
+            if (fmSpecElem) fmSpecElem.textContent = Utils.formatNumber(fm, 3) + ' Hz';
+            const fzSpecElem = document.getElementById('fz_spec');
+            if (fzSpecElem) fzSpecElem.textContent = Utils.formatNumber(fz, 3) + ' Hz';
+            const feSpecElem = document.getElementById('fe_spec');
+            if (feSpecElem) feSpecElem.textContent = Utils.formatNumber(fe, 3) + ' Hz';
+
+            // 安全更新可选元素（可能不存在）
+            const sampleCountElem = document.getElementById('sampleCount');
+            if (sampleCountElem) {
+                sampleCountElem.textContent = metadata.sample_count || '--';
+            }
+            const windowDurationElem = document.getElementById('windowDuration');
+            if (windowDurationElem) {
+                windowDurationElem.textContent =
+                    (metadata.duration_seconds ? Math.round(metadata.duration_seconds) + ' s' : '-- s');
+            }
+
+            // 更新各雷达波高（安全访问）
+            const hs1 = results.Hs_radar1 ?? results.Hm0_radar1;
+            const hs2 = results.Hs_radar2 ?? results.Hm0_radar2;
+            const hs3 = results.Hs_radar3 ?? results.Hm0_radar3;
+
+            const hs1Elem = document.getElementById('hs1');
+            if (hs1Elem && hs1 !== undefined && hs1 !== null) {
+                hs1Elem.textContent = Utils.formatNumber(hs1, 3) + ' m';
+            }
+            const hs2Elem = document.getElementById('hs2');
+            if (hs2Elem && hs2 !== undefined && hs2 !== null) {
+                hs2Elem.textContent = Utils.formatNumber(hs2, 3) + ' m';
+            }
+            const hs3Elem = document.getElementById('hs3');
+            if (hs3Elem && hs3 !== undefined && hs3 !== null) {
+                hs3Elem.textContent = Utils.formatNumber(hs3, 3) + ' m';
+            }
+
+            // 更新频域图表
+            if (data.spectrum && data.spectrum.frequencies && data.spectrum.combined) {
+                const sp = data.spectrum;
+                // 将频率格式化为显示标签
+                const freqLabels = sp.frequencies.map(f => f.toFixed(3));
+                freqDomainChart.data.labels = freqLabels;
+                freqDomainChart.data.datasets[0].data = sp.combined;
+                freqDomainChart.update('none');
+
+                // 找出峰值频率
+                const maxIdx = sp.combined.indexOf(Math.max(...sp.combined));
+                const peakFreq = sp.frequencies[maxIdx];
+                document.getElementById('freqDomainInfo').textContent =
+                    `峰值频率: ${peakFreq.toFixed(3)} Hz, 周期: ${(1/peakFreq).toFixed(2)} s`;
+            }
+
+            // 更新分析窗口图表
+            if (data.time_domain && data.time_domain.eta1) {
+                const td = data.time_domain;
+                const labels = td.timestamps || td.eta1.map((_, i) => i);
+
+                analysisWindowChart.data.labels = labels;
+                analysisWindowChart.data.datasets[0].data = td.eta1;
+                analysisWindowChart.data.datasets[1].data = td.eta2 || [];
+                analysisWindowChart.data.datasets[2].data = td.eta3 || [];
+                analysisWindowChart.update('none');
+
+                // 更新图表信息：显示样本数和有效雷达数量
+                const hasEta2 = td.eta2 && td.eta2.length > 0;
+                const hasEta3 = td.eta3 && td.eta3.length > 0;
+                const activeRadars = 1 + (hasEta2 ? 1 : 0) + (hasEta3 ? 1 : 0);
+                document.getElementById('analysisWindowInfo').textContent =
+                    `样本数: ${td.eta1.length}, ${activeRadars}个雷达`;
+            }
+
+            // Update spectrum trend charts with new analyzed data
+            updateSpectrumTrendCharts(results);
+
+            // Update directional spectrum display
+            updateDirectionalSpectrumDisplay(data);
+
+            updateLastUpdateTime();
+
+            } catch (error) {
+                console.error('[Dashboard] Error updating analyzed data:', error);
+                console.error('[Dashboard] Error stack:', error.stack);
+                console.error('[Dashboard] Failed data:', data);
+            }
+        }
+
+        function updateRawData(data) {
+            console.log('[Dashboard] updateRawData called with:', data);
+
+            // 处理新格式：单个雷达数据 {radar_id, distance, quality, timestamp}
+            if (data.radar_id && data.distance !== undefined) {
+                const radarId = data.radar_id;
+                const distance = data.distance;
+                const quality = data.quality || 0;
+
+                const isValidData = distance !== null && distance !== undefined;
+
+                // 更新雷达高度显示
+                const heightElem = document.getElementById(`radar${radarId}Height`);
+                if (heightElem && isValidData) {
+                    heightElem.textContent = Utils.formatNumber(distance, 3) + ' m';
+                }
+
+                // 更新雷达状态
+                const statusElem = document.getElementById(`radar${radarId}Status`);
+                if (statusElem) {
+                    if (isValidData) {
+                        statusElem.textContent = '在线';
+                        statusElem.style.color = '#10b981';
+                        statusElem.style.fontWeight = 'bold';
+                    } else {
+                        statusElem.textContent = '离线';
+                        statusElem.style.color = '#ef4444';
+                    }
+                }
+
+                updateLastUpdateTime();
+                return;
+            }
+
+            // 处理标准格式 (MQTT collector format)
+            // {timestamp, sample: {timestamps, heights, radar_status}, metadata: {sample_rate}}
+            const sample = data.sample || {};
+            const metadata = data.metadata || {};
+
+            // 更新采样率
+            if (metadata.sample_rate) {
+                document.getElementById('sampleRate').textContent =
+                    Utils.formatNumber(metadata.sample_rate, 1) + ' Hz';
+            }
+
+            // 更新雷达高度（支持1-3个雷达）
+            if (sample.heights && sample.heights.length > 0) {
+                console.log('[Dashboard] Updating radar heights:', sample.heights);
+                for (let i = 0; i < sample.heights.length; i++) {
+                    const height = sample.heights[i];
+                    const heightElem = document.getElementById(`radar${i+1}Height`);
+                    const statusElem = document.getElementById(`radar${i+1}Status`);
+                    const radarElem = document.getElementById(`radar${i+1}`);
+
+                    const isValidData = height !== null && height !== undefined;
+
+                    if (heightElem && isValidData) {
+                        heightElem.textContent = Utils.formatNumber(height, 3) + ' m';
+                    }
+
+                    // 更新雷达状态 - 如果有有效数据就认为在线
+                    if (statusElem) {
+                        const isOnline = (sample.radar_status && sample.radar_status[i]) ||
+                                        isValidData;
+                        if (isOnline) {
+                            statusElem.textContent = '在线';
+                            statusElem.style.color = '#10b981';
+                            statusElem.style.fontWeight = 'bold';
+                            if (radarElem) {
+                                radarElem.classList.add('online');
+                                radarElem.classList.remove('offline');
+                            }
+                        }
+                    }
+                }
+            }
+
+            updateLastUpdateTime();
+        }
+
+        function updateSystemStatus(statusData) {
+            console.log('[Dashboard] updateSystemStatus called with:', statusData);
+
+            // WebSocket 推送单个组件状态 (component: 'collector' 或 'analyzer')
+            // API /api/latest 返回聚合状态 {collector: {...}, analyzer: {...}}
+
+            // 检测是单个组件状态还是聚合状态
+            const component = statusData.component;
+
+            if (component === 'collector' || statusData.collector) {
+                // 处理采集器状态
+                const collector = component === 'collector' ? statusData : statusData.collector;
+                const stats = collector.statistics || {};
+
+                document.getElementById('samplesCollected').textContent =
+                    stats.samples_collected || '--';
+                document.getElementById('samplesPublished').textContent =
+                    stats.samples_published || '--';
+                document.getElementById('errors').textContent =
+                    stats.errors || '0';
+
+                // 更新雷达状态
+                if (collector.radars && Array.isArray(collector.radars)) {
+                    collector.radars.forEach((radar) => {
+                        const radarElem = document.getElementById(`radar${radar.id}`);
+                        const statusElem = document.getElementById(`radar${radar.id}Status`);
+
+                        if (radarElem && statusElem) {
+                            if (radar.connected) {
+                                radarElem.classList.add('online');
+                                radarElem.classList.remove('offline');
+                                statusElem.textContent = '在线';
+                            } else {
+                                radarElem.classList.add('offline');
+                                radarElem.classList.remove('online');
+                                statusElem.textContent = '离线';
+                            }
+                        }
+                    });
+                }
+            }
+
+            if (component === 'analyzer' || statusData.analyzer) {
+                // 处理分析器状态
+                const analyzer = component === 'analyzer' ? statusData : statusData.analyzer;
+                const stats = analyzer.statistics || {};
+
+                document.getElementById('analysesCompleted').textContent =
+                    stats.analyses_completed || '--';
+
+                // 保存分析器状态
+                lastAnalyzerStatus = analyzer;
+
+                // 同步倒计时
+                if (analyzer.seconds_until_next_analysis !== undefined) {
+                    countdownSeconds = analyzer.seconds_until_next_analysis;
+                }
+
+                // 更新进度显示
+                updateAnalysisProgress(analyzer);
+            }
+
+            updateLastUpdateTime();
+        }
+
+        // 更新分析进度（简化版：直接使用服务器数据）
+        function updateAnalysisProgress(analyzer) {
+            console.log('[Progress] updateAnalysisProgress called with:', analyzer);
+            if (!analyzer || typeof analyzer !== 'object') {
+                console.log('[Progress] Invalid analyzer object, returning');
+                return;
+            }
+
+            const progressCard = document.getElementById('analysisProgressCard');
+            const progressBar = document.getElementById('progressBar');
+            const progressPercent = document.getElementById('progressPercent');
+            const currentSamples = document.getElementById('currentSamples');
+            const requiredSamples = document.getElementById('requiredSamples');
+            const progressStatus = document.getElementById('progressStatus');
+            const progressMessage = document.getElementById('progressMessage');
+            const cardHeader = progressCard?.querySelector('.card-header span:first-child');
+
+            if (!progressBar || !progressCard) return;
+
+            // 如果分析器未运行，隐藏进度条
+            if (analyzer.status && analyzer.status !== 'running') {
+                progressCard.style.display = 'none';
+                if (countdownInterval) {
+                    clearInterval(countdownInterval);
+                    countdownInterval = null;
+                }
+                return;
+            }
+
+            progressCard.style.display = 'block';
+
+            // 空闲状态（STOP / 未收到指令）：进度条归零
+            if (analyzer.idle) {
+                progressBar.style.width = '0%';
+                progressPercent.textContent = '待命';
+                progressStatus.textContent = '等待分析指令';
+                progressMessage.textContent = '发送 METER 或 WORK 命令开始分析';
+                if (cardHeader) cardHeader.textContent = '⏸️ 待命';
+                progressBar.style.background = 'linear-gradient(90deg, #9E9E9E, #BDBDBD)';
+                if (countdownInterval) {
+                    clearInterval(countdownInterval);
+                    countdownInterval = null;
+                }
+                return;
+            }
+
+            const analysisInterval = analyzer.analysis_interval || 300;
+
+            // 统一显示倒计时（发送 METER/WORK 后）
+            if (cardHeader) cardHeader.textContent = '⏱️ 下次分析倒计时';
+
+            // 启动倒计时定时器（每秒更新）
+            if (!countdownInterval) {
+                countdownInterval = setInterval(() => {
+                    countdownSeconds = Math.max(0, countdownSeconds - 1);
+                    updateCountdownDisplay();
+                }, 1000);
+            }
+
+            updateCountdownDisplay();
+        }
+
+        // 更新倒计时显示
+        function updateCountdownDisplay() {
+            const progressBar = document.getElementById('progressBar');
+            const progressPercent = document.getElementById('progressPercent');
+            const progressStatus = document.getElementById('progressStatus');
+            const progressMessage = document.getElementById('progressMessage');
+
+            if (!progressBar) return;
+
+            const analysisInterval = lastAnalyzerStatus?.analysis_interval || 300;
+            const progress = ((analysisInterval - countdownSeconds) / analysisInterval) * 100;
+
+            progressBar.style.width = Math.max(0, Math.min(100, progress)) + '%';
+            progressPercent.textContent = Math.ceil(countdownSeconds) + '秒';
+
+            const mode = lastAnalyzerStatus?.last_on_demand_mode;
+            const modeLabel = mode ? mode.toUpperCase() : '';
+            if (countdownSeconds > 0) {
+                progressStatus.textContent = modeLabel
+                    ? `${modeLabel} 模式 · ${analysisInterval}秒滚动窗口`
+                    : `每 ${analysisInterval} 秒分析一次`;
+                progressMessage.textContent = '数据采集完成 ✓ 等待下次分析指令...';
+            } else {
+                progressStatus.textContent = '正在分析...';
+                progressMessage.textContent = '波浪分析进行中，请稍候...';
+            }
+
+            progressBar.style.background = 'linear-gradient(90deg, #2196F3, #21CBF3)';
+        }
+
+        function updateRealtimeChart(data) {
+            if (isPaused) return;
+
+            const sample = data.sample || {};
+
+            if (sample.timestamps && sample.heights && sample.timestamps.length > 0) {
+                const timestamp = new Date(sample.timestamps[0]);
+                const heights = sample.heights;
+
+                chartManager.updateTimeSeriesChart('realtimeChart', heights, timestamp);
+            }
+        }
+
+        // ==================== 图表控制 ====================
+        function clearChartData() {
+            chartManager.clearChart('realtimeChart');
+            Utils.showToast('图表数据已清空', 'info');
+        }
+
+        function toggleChartPause() {
+            isPaused = !isPaused;
+            const icon = document.getElementById('pauseIcon');
+
+            if (isPaused) {
+                icon.textContent = '▶';
+                Utils.showToast('图表已暂停更新', 'info');
+            } else {
+                icon.textContent = '⏸';
+                Utils.showToast('图表继续更新', 'info');
+            }
+        }
+
+        // ==================== 辅助函数 ====================
+        function updateLastUpdateTime() {
+            document.getElementById('lastUpdate').textContent =
+                Utils.formatTimestamp(new Date(), true);
+        }
+
+        function startSystemClock() {
+            setInterval(() => {
+                document.getElementById('systemTime').textContent =
+                    new Date().toLocaleTimeString('zh-CN');
+            }, 1000);
+        }
+
+        // ==================== 错误处理 ====================
+        window.addEventListener('error', (event) => {
+            console.error('[Dashboard] Error:', event.error);
+        });
+
+        window.addEventListener('unhandledrejection', (event) => {
+            console.error('[Dashboard] Unhandled promise rejection:', event.reason);
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,55 @@
+scenario: moderate_sea
+
+calm:
+  hs: 0.3
+  tp: 6.0
+  direction: 180.0
+  gamma: 3.3
+
+moderate_sea:
+  hs: 2.0
+  tp: 10.0
+  direction: 111.0
+  gamma: 3.3
+
+storm:
+  hs: 4.0
+  tp: 12.0
+  direction: 270.0
+  gamma: 5.0
+
+mixed_swell:
+  components:
+    - {hs: 1.0, tp: 10.0, direction: 180.0}
+    - {hs: 0.8, tp: 5.0, direction: 270.0}
+
+anomalies:
+  spike:
+    enabled: false
+    probability: 0.001
+    magnitude: 3.0
+  flat_line:
+    enabled: false
+    radar: 2
+    duration: 30
+    start_after: 120
+  dropout:
+    enabled: false
+    radar: 3
+    probability: 0.05
+  out_of_range:
+    enabled: false
+    probability: 0.002
+
+radar:
+  array_height: 10.0
+  positions:
+    R1: [0.0, 0.0]
+    R2: [-0.1333, 0.2309]
+    R3: [0.1333, 0.2309]
+  tilt_angles:
+    R1: 0.0
+    R2: 10.0
+    R3: 10.0
+  modbus_address: 246
+  baudrate: 115200

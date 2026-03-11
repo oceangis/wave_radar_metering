@@ -1,0 +1,29 @@
+# =================================================================
+# 波浪监测系统 - 雷达串口设备规则 (基于USB转RS485芯片序列号)
+# =================================================================
+#
+# 优势：
+#   - 雷达可以插在任何USB口，编号始终不变
+#   - 编号跟随雷达（USB转RS485转换器）
+#   - 更灵活，不受USB物理端口限制
+#
+# 查看设备序列号:
+#   for port in /dev/ttyUSB*; do
+#     echo "$port: $(udevadm info -q all -n $port | grep ID_SERIAL_SHORT | cut -d= -f2)"
+#   done
+#
+
+# 1号雷达 - USB转RS485序列号: FTAGRJ3D
+SUBSYSTEM=="tty", ATTRS{serial}=="FTAGRJ3D", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", SYMLINK+="radar1", MODE="0666", GROUP="plugdev"
+
+# 2号雷达 - USB转RS485序列号: FTAGPTOV
+SUBSYSTEM=="tty", ATTRS{serial}=="FTAGPTOV", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", SYMLINK+="radar2", MODE="0666", GROUP="plugdev"
+
+# 3号雷达 - USB转RS485序列号: FTAGPT4N
+SUBSYSTEM=="tty", ATTRS{serial}=="FTAGPT4N", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", SYMLINK+="radar3", MODE="0666", GROUP="plugdev"
+
+# 树莓派原生串口 (EC800模块等)
+KERNEL=="ttyAMA0", SYMLINK+="ec800", MODE="0666"
+
+# USB转RS232 串口控制台 (序列号: FTES3TZ5)
+SUBSYSTEM=="tty", ATTRS{serial}=="FTES3TZ5", ATTRS{idVendor}=="0403", ATTRS{idProduct}=="6001", SYMLINK+="rs232", MODE="0666", GROUP="plugdev"

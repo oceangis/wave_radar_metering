@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>频谱分析 - 波浪监测系统</title>
+
+    <!-- CSS -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/charts.css') }}">
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>📈 波浪能量频谱分析</h1>
+
+        <!-- 导航栏 -->
+        <div class="controls">
+            <a href="/" class="btn btn-secondary">← 返回首页</a>
+            <a href="/history" class="btn btn-primary">历史数据</a>
+            <a href="/config" class="btn btn-secondary">系统配置</a>
+        </div>
+
+        <!-- WebSocket 状态 -->
+        <div class="status-bar">
+            <div class="status-item">
+                <div class="status-indicator" id="wsIndicator"></div>
+                <span>实时数据: <strong id="wsStatus">连接中...</strong></span>
+            </div>
+            <div class="status-item">
+                <span>最后更新: <strong id="lastUpdate">--</strong></span>
+            </div>
+        </div>
+
+        <!-- 频谱参数 -->
+        <div class="card">
+            <div class="card-header">频谱参数</div>
+            <div class="spectrum-info">
+                <div class="spectrum-info-item">
+                    <div class="spectrum-info-label">峰值频率</div>
+                    <div class="spectrum-info-value" id="peakFreq">-- Hz</div>
+                </div>
+                <div class="spectrum-info-item">
+                    <div class="spectrum-info-label">峰值周期</div>
+                    <div class="spectrum-info-value" id="peakPeriod">-- s</div>
+                </div>
+                <div class="spectrum-info-item">
+                    <div class="spectrum-info-label">谱峰能量密度</div>
+                    <div class="spectrum-info-value" id="peakEnergy">-- m²/Hz</div>
+                </div>
+                <div class="spectrum-info-item">
+                    <div class="spectrum-info-label">总能量</div>
+                    <div class="spectrum-info-value" id="totalEnergy">-- m²</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 能量谱图 -->
+        <div class="chart-card">
+            <div class="chart-card-header">
+                <div class="chart-card-title">波浪能量谱密度</div>
+                <div class="chart-card-actions">
+                    <button class="btn btn-sm btn-outline" onclick="toggleLogScale()">
+                        <span id="scaleText">对数刻度</span>
+                    </button>
+                    <button class="btn btn-sm btn-primary" onclick="toggleAutoUpdate()">
+                        <span id="updateIcon">⏸</span>
+                    </button>
+                </div>
+            </div>
+            <div class="chart-wrapper chart-xl">
+                <canvas id="spectrumChart"></canvas>
+            </div>
+            <div class="spectrum-info" style="margin-top: 15px;">
+                <div class="spectrum-info-item">
+                    <div class="spectrum-info-label">频率范围</div>
+                    <div class="spectrum-info-value">0.04 - 1.0 Hz</div>
+                </div>
+                <div class="spectrum-info-item">
+                    <div class="spectrum-info-label">周期范围</div>
+                    <div class="spectrum-info-value">1 - 25 s</div>
+                </div>
+                <div class="spectrum-info-item">
+                    <div class="spectrum-info-label">频率分辨率</div>
+                    <div class="spectrum-info-value" id="freqResolution">-- Hz</div>
+                </div>
+                <div class="spectrum-info-item">
+                    <div class="spectrum-info-label">有效点数</div>
+                    <div class="spectrum-info-value" id="spectrumPoints">--</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 各雷达频谱对比 -->
+        <div class="charts-grid layout-3">
+            <div class="chart-card">
+                <div class="chart-card-header">
+                    <div class="chart-card-title">雷达1 频谱</div>
+                </div>
+                <div class="chart-wrapper chart-md">
+                    <canvas id="radar1Chart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-card-header">
+                    <div class="chart-card-title">雷达2 频谱</div>
+                </div>
+                <div class="chart-wrapper chart-md">
+                    <canvas id="radar2Chart"></canvas>
+                </div>
+            </div>
+
+            <div class="chart-card">
+                <div class="chart-card-header">
+                    <div class="chart-card-title">雷达3 频谱</div>
+                </div>
+                <div class="chart-wrapper chart-md">
+                    <canvas id="radar3Chart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- 频谱说明 -->
+        <div class="card">
+            <div class="card-header">频谱分析说明</div>
+            <div class="card-body">
+                <h3>能量谱密度 (Energy Spectral Density)</h3>
+                <p>能量谱密度 S(f) 表示海浪能量在不同频率上的分布，单位为 m²/Hz。</p>
+
+                <h3 style="margin-top: 20px;">关键参数</h3>
+                <ul>
+                    <li><strong>峰值频率 (fp)</strong>: 能量谱密度最大值对应的频率</li>
+                    <li><strong>峰值周期 (Tp)</strong>: Tp = 1/fp，主导波浪的周期</li>
+                    <li><strong>有效波高 (Hm0)</strong>: Hm0 = 4√m₀，其中 m₀ = ∫S(f)df (零阶矩)</li>
+                    <li><strong>平均周期 (Tz)</strong>: Tz = √(m₀/m₂)，其中 m₂ = ∫f²S(f)df (二阶矩)</li>
+                </ul>
+
+                <h3 style="margin-top: 20px;">频率与周期对应关系</h3>
+                <ul>
+                    <li>0.04 Hz ↔ 25 s (长周期涌浪)</li>
+                    <li>0.1 Hz ↔ 10 s (涌浪)</li>
+                    <li>0.2 Hz ↔ 5 s (混合浪)</li>
+                    <li>0.5 Hz ↔ 2 s (风浪)</li>
+                    <li>1.0 Hz ↔ 1 s (短周期风浪)</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <!-- JavaScript -->
+    <script src="{{ url_for('static', filename='js/utils.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/api.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/websocket.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/charts.js') }}"></script>
+
+    <script>
+        let spectrumChart = null;
+        let radar1Chart = null;
+        let radar2Chart = null;
+        let radar3Chart = null;
+        let autoUpdate = true;
+        let useLogScale = false;
+
+        // 初始化
+        window.addEventListener('DOMContentLoaded', () => {
+            console.log('[Spectrum] Page loaded');
+            initCharts();
+            connectWebSocket();
+        });
+
+        // 初始化图表
+        function initCharts() {
+            const chartOptions = {
+                title: '波浪能量谱',
+                xAxisLabel: '频率 (Hz)',
+                yAxisLabel: '能量谱密度 (m²/Hz)'
+            };
+
+            spectrumChart = chartManager.createSpectrumChart('spectrumChart', chartOptions);
+
+            radar1Chart = chartManager.createSpectrumChart('radar1Chart', {
+                ...chartOptions,
+                title: '雷达1 能量谱'
+            });
+
+            radar2Chart = chartManager.createSpectrumChart('radar2Chart', {
+                ...chartOptions,
+                title: '雷达2 能量谱'
+            });
+
+            radar3Chart = chartManager.createSpectrumChart('radar3Chart', {
+                ...chartOptions,
+                title: '雷达3 能量谱'
+            });
+
+            console.log('[Spectrum] Charts initialized');
+        }
+
+        // WebSocket 连接
+        function connectWebSocket() {
+            wsClient.onConnectionStateChange((state) => {
+                const indicator = document.getElementById('wsIndicator');
+                const status = document.getElementById('wsStatus');
+
+                if (state === 'connected') {
+                    indicator.classList.add('online');
+                    indicator.classList.remove('offline');
+                    status.textContent = '已连接';
+                } else {
+                    indicator.classList.add('offline');
+                    indicator.classList.remove('online');
+                    status.textContent = '断开连接';
+                }
+            });
+
+            // 监听分析数据
+            wsClient.on('analyzed', (data) => {
+                if (autoUpdate) {
+                    updateSpectrum(data);
+                }
+            });
+
+            wsClient.on('init', (data) => {
+                if (data.analyzed) {
+                    updateSpectrum(data.analyzed);
+                }
+            });
+
+            wsClient.connect();
+        }
+
+        // 更新频谱
+        function updateSpectrum(data) {
+            const results = data.results || {};
+            const spectrum = data.spectrum || {};
+
+            // 更新参数
+            if (results.peak_frequency) {
+                document.getElementById('peakFreq').textContent =
+                    Utils.formatNumber(results.peak_frequency, 3) + ' Hz';
+            }
+
+            if (results.Tp) {
+                document.getElementById('peakPeriod').textContent =
+                    Utils.formatNumber(results.Tp, 2) + ' s';
+            }
+
+            // 更新综合频谱图
+            if (spectrum.frequencies && spectrum.combined) {
+                chartManager.updateSpectrumChart('spectrumChart',
+                    spectrum.frequencies, spectrum.combined);
+
+                // 计算并显示额外信息
+                updateSpectrumInfo(spectrum);
+            }
+
+            // 更新各雷达频谱
+            if (spectrum.frequencies) {
+                if (spectrum.radar1) {
+                    chartManager.updateSpectrumChart('radar1Chart',
+                        spectrum.frequencies, spectrum.radar1);
+                }
+                if (spectrum.radar2) {
+                    chartManager.updateSpectrumChart('radar2Chart',
+                        spectrum.frequencies, spectrum.radar2);
+                }
+                if (spectrum.radar3) {
+                    chartManager.updateSpectrumChart('radar3Chart',
+                        spectrum.frequencies, spectrum.radar3);
+                }
+            }
+
+            // 更新时间戳
+            document.getElementById('lastUpdate').textContent =
+                Utils.formatTimestamp(new Date());
+        }
+
+        // 更新频谱信息
+        function updateSpectrumInfo(spectrum) {
+            if (!spectrum.frequencies || !spectrum.combined) return;
+
+            const freqs = spectrum.frequencies;
+            const energies = spectrum.combined;
+
+            // 频率分辨率
+            if (freqs.length > 1) {
+                const resolution = freqs[1] - freqs[0];
+                document.getElementById('freqResolution').textContent =
+                    Utils.formatNumber(resolution, 4) + ' Hz';
+            }
+
+            // 有效点数
+            document.getElementById('spectrumPoints').textContent = freqs.length;
+
+            // 峰值能量
+            const maxEnergy = Math.max(...energies);
+            document.getElementById('peakEnergy').textContent =
+                Utils.formatNumber(maxEnergy, 4) + ' m²/Hz';
+
+            // 总能量 (积分)
+            let totalEnergy = 0;
+            for (let i = 1; i < freqs.length; i++) {
+                const df = freqs[i] - freqs[i-1];
+                const avgEnergy = (energies[i] + energies[i-1]) / 2;
+                totalEnergy += avgEnergy * df;
+            }
+            document.getElementById('totalEnergy').textContent =
+                Utils.formatNumber(totalEnergy, 3) + ' m²';
+        }
+
+        // 切换对数刻度
+        function toggleLogScale() {
+            useLogScale = !useLogScale;
+
+            const charts = [spectrumChart, radar1Chart, radar2Chart, radar3Chart];
+            const scaleType = useLogScale ? 'logarithmic' : 'linear';
+
+            charts.forEach(chart => {
+                if (chart) {
+                    chart.options.scales.y.type = scaleType;
+                    chart.update();
+                }
+            });
+
+            const scaleText = document.getElementById('scaleText');
+            scaleText.textContent = useLogScale ? '线性刻度' : '对数刻度';
+
+            Utils.showToast(useLogScale ? '已切换到对数刻度' : '已切换到线性刻度', 'info');
+        }
+
+        // 切换自动更新
+        function toggleAutoUpdate() {
+            autoUpdate = !autoUpdate;
+
+            const icon = document.getElementById('updateIcon');
+            icon.textContent = autoUpdate ? '⏸' : '▶';
+
+            Utils.showToast(
+                autoUpdate ? '频谱自动更新已启用' : '频谱自动更新已暂停',
+                'info'
+            );
+        }
+    </script>
+</body>
+</html>

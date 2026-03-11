@@ -1,0 +1,24 @@
+[Unit]
+Description=Wave Monitoring - Web Service
+After=network.target mosquitto.service postgresql.service
+Wants=mosquitto.service postgresql.service
+PartOf=wave-monitor.target
+
+[Service]
+Type=simple
+User=obsis
+Group=obsis
+WorkingDirectory=/home/obsis/radar/mqtt_system/services
+ExecStart=/home/obsis/radar/mqtt_system/venv/bin/python3 /home/obsis/radar/mqtt_system/services/web_server.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+Environment="PYTHONUNBUFFERED=1"
+
+MemoryMax=512M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target

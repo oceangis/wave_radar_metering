@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket 测试</title>
+    <style>
+        body { font-family: monospace; padding: 20px; }
+        .log { background: #f0f0f0; padding: 10px; margin: 10px 0; border-radius: 5px; }
+        .success { color: green; }
+        .error { color: red; }
+        .info { color: blue; }
+    </style>
+</head>
+<body>
+    <h2>WebSocket 连接测试</h2>
+    <div id="status">连接中...</div>
+    <div id="logs"></div>
+    
+    <script>
+        const logsDiv = document.getElementById('logs');
+        const statusDiv = document.getElementById('status');
+        
+        function log(message, type = 'info') {
+            const div = document.createElement('div');
+            div.className = 'log ' + type;
+            div.textContent = new Date().toLocaleTimeString() + ' - ' + message;
+            logsDiv.appendChild(div);
+            logsDiv.scrollTop = logsDiv.scrollHeight;
+        }
+        
+        const ws = new WebSocket('ws://' + window.location.host + '/ws');
+        
+        ws.onopen = () => {
+            statusDiv.textContent = '✅ WebSocket 已连接';
+            statusDiv.className = 'success';
+            log('WebSocket 连接成功', 'success');
+        };
+        
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            log('收到消息: ' + JSON.stringify(data, null, 2), 'info');
+            
+            // 如果是雷达数据，显示详细信息
+            if (data.type === 'raw' && data.data) {
+                const radar = data.data;
+                log(`📡 雷达${radar.radar_id}: ${radar.distance}m (质量:${radar.quality}%)`, 'success');
+            }
+        };
+        
+        ws.onerror = (error) => {
+            log('WebSocket 错误: ' + error, 'error');
+            statusDiv.textContent = '❌ 连接错误';
+            statusDiv.className = 'error';
+        };
+        
+        ws.onclose = () => {
+            log('WebSocket 连接已关闭', 'error');
+            statusDiv.textContent = '⚠️ 连接已断开';
+        };
+    </script>
+</body>
+</html>

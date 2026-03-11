@@ -1,0 +1,31 @@
+[Unit]
+Description=Wave Monitoring - Tide Analysis Service (UTide)
+Documentation=https://github.com/wesleybowman/UTide
+After=network.target postgresql.service mosquitto.service
+Requires=network.target
+Wants=postgresql.service mosquitto.service
+PartOf=wave-monitor.target
+
+[Service]
+Type=simple
+User=obsis
+Group=obsis
+WorkingDirectory=/home/obsis/radar/mqtt_system
+Environment="PATH=/home/obsis/radar/mqtt_system/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/home/obsis/radar/mqtt_system/venv/bin/python3 /home/obsis/radar/mqtt_system/services/mqtt_tide_analyzer.py
+
+# Restart configuration
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=wave-tide-analyzer
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=false
+
+[Install]
+WantedBy=multi-user.target

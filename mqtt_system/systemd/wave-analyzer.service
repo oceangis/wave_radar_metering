@@ -1,0 +1,24 @@
+[Unit]
+Description=Wave Monitoring - Analysis Service
+After=network.target mosquitto.service
+Wants=mosquitto.service
+PartOf=wave-monitor.target
+
+[Service]
+Type=simple
+User=obsis
+Group=obsis
+WorkingDirectory=/home/obsis/radar/mqtt_system/services
+ExecStart=/home/obsis/radar/mqtt_system/venv/bin/python3 /home/obsis/radar/mqtt_system/services/mqtt_analyzer.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+Environment="PYTHONUNBUFFERED=1"
+
+MemoryMax=1G
+CPUQuota=75%
+
+[Install]
+WantedBy=multi-user.target

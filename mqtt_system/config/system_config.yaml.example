@@ -1,0 +1,154 @@
+analysis:
+  analysis_interval: 60
+  assumed_wave_direction: 0.0
+  direction_resolution: 360
+  diwasp_method: IMLM
+  filter_band:
+  - 0.04
+  - 1
+  filter_enable: true
+  gravity: 9.81
+  min_samples: 100
+  nperseg: 600
+  qc:
+    flat_line_count: 3
+    flat_line_tolerance: 0.001
+    max_rate_of_change: 2.5
+    valid_range:
+    - 0.0
+    - 100.0
+  tide_window_duration: 300
+  window_duration: 1200
+collection:
+  buffer_size: 1024
+  max_retry: 3
+  publish_interval: 1.0
+  radar_retry_interval: 30
+  retry_delay: 0.1
+  sample_rate: 6
+database:
+  connection_pool:
+    max: 10
+    min: 2
+  database: wave_monitoring
+  host: localhost
+  password: wave2025
+  port: 5432
+  user: wave_user
+ec800:
+  baudrate: 115200
+  port: /dev/ttyAMA0
+logging:
+  backup_count: 5
+  console_logging: true
+  file_logging: true
+  format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  level: INFO
+  log_dir: /home/obsis/radar/mqtt_system/logs
+  max_bytes: 10485760
+metadata:
+  creator_email: admin@example.com
+  creator_name: System Administrator
+  institution: Wave Monitoring Institute
+  license: Proprietary
+  project: Coastal Wave Monitoring System
+  version: 1.0.0
+monitoring:
+  health_check_enabled: true
+  health_check_interval: 30
+  metrics_enabled: true
+  metrics_publish_interval: 300
+  status_report_interval: 5
+mqtt:
+  broker_host: localhost
+  broker_port: 1883
+  keepalive: 60
+  password: wave2025
+  topics:
+    analyzed_data: radar/analyzed
+    logs: system/logs
+    raw_data: radar/raw
+    system_command: system/command
+    system_config: system/config
+    system_status: system/status
+  username: wave_user
+radar:
+  array_heading: 35.0
+  array_height: 10.0
+  baudrate: 115200
+  diwasp_positions:
+    R1:
+    - 0.0
+    - 0.0
+    - 0.0
+    R2:
+    - -0.1333
+    - 0.2309
+    - 0.0
+    R3:
+    - 0.1333
+    - 0.2309
+    - 0.0
+  modbus_address: 246
+  ports:
+  - /dev/radar1
+  - /dev/radar2
+  - /dev/radar3
+  positions:
+    1:
+    - 31.234
+    - 121.456
+    - 5.0
+    2:
+    - 31.234
+    - 121.466
+    - 5.0
+    3:
+    - 31.244
+    - 121.456
+    - 5.0
+  relative_positions:
+    1:
+    - 0.0
+    - 0.0
+    2:
+    - 10.0
+    - 0.0
+    3:
+    - 0.0
+    - 10.0
+  tilt_angles:
+    R1: 0.0
+    R2: 10.0
+    R3: 10.0
+  timeout: 0.05
+site:
+  latitude: 31.234
+  longitude: 121.456
+  name: Coastal Wave Monitoring Station
+  timezone: Asia/Shanghai
+storage:
+  auto_cleanup: true
+  batch_size: 100
+  batch_timeout: 5.0
+  cleanup_interval: 86400
+  retention:
+    analysis_data_days: 365
+    logs_days: 90
+    raw_data_days: 90
+thingsboard:
+  access_token: B5ds53IY9HPMWA772b7O
+  host: 8.155.1.77
+  port: 1883
+web:
+  cors_enabled: true
+  cors_origins:
+  - '*'
+  debug: false
+  host: 0.0.0.0
+  port: 8080
+  static_folder: web/static
+  template_folder: web/templates
+  websocket:
+    ping_interval: 30
+    ping_timeout: 10

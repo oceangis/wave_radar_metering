@@ -1,0 +1,453 @@
+/**
+ * 图表样式
+ * Chart Specific Styles
+ */
+
+/* ==================== 图表卡片 ==================== */
+.chart-card {
+    background: rgba(255, 255, 255, 0.95);
+    border-radius: var(--radius-lg);
+    padding: var(--spacing-lg);
+    box-shadow: var(--shadow-md);
+    margin-bottom: var(--spacing-lg);
+}
+
+.chart-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--spacing);
+    padding-bottom: var(--spacing);
+    border-bottom: 2px solid var(--gray-200);
+}
+
+.chart-card-title {
+    font-size: 1.3rem;
+    font-weight: 700;
+    color: var(--gray-800);
+}
+
+.chart-card-actions {
+    display: flex;
+    gap: var(--spacing-xs);
+}
+
+.chart-card-body {
+    position: relative;
+}
+
+/* ==================== 图表工具栏 ==================== */
+.chart-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--spacing);
+    padding: var(--spacing-sm);
+    background: var(--gray-50);
+    border-radius: var(--radius);
+}
+
+.chart-toolbar-left,
+.chart-toolbar-right {
+    display: flex;
+    gap: var(--spacing-sm);
+    align-items: center;
+}
+
+.chart-toolbar .btn-icon {
+    width: 36px;
+    height: 36px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--gray-300);
+    background: white;
+    color: var(--gray-600);
+    cursor: pointer;
+    transition: all var(--transition);
+}
+
+.chart-toolbar .btn-icon:hover {
+    background: var(--primary-color);
+    color: white;
+    border-color: var(--primary-color);
+}
+
+.chart-toolbar .btn-icon.active {
+    background: var(--primary-color);
+    color: white;
+    border-color: var(--primary-color);
+}
+
+/* ==================== 图表容器尺寸 ==================== */
+.chart-wrapper {
+    position: relative;
+    width: 100%;
+}
+
+.chart-wrapper.chart-sm {
+    height: 250px;
+}
+
+.chart-wrapper.chart-md {
+    height: 350px;
+}
+
+.chart-wrapper.chart-lg {
+    height: 450px;
+}
+
+.chart-wrapper.chart-xl {
+    height: 600px;
+}
+
+/* ==================== 图表加载状态 ==================== */
+.chart-loading {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.9);
+    z-index: 10;
+}
+
+.chart-loading .loading-spinner {
+    width: 40px;
+    height: 40px;
+    border-width: 4px;
+}
+
+/* ==================== 图表空状态 ==================== */
+.chart-empty {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: var(--spacing-xl);
+    color: var(--gray-500);
+    text-align: center;
+}
+
+.chart-empty .icon {
+    font-size: 3rem;
+    margin-bottom: var(--spacing);
+    opacity: 0.5;
+}
+
+.chart-empty .message {
+    font-size: 1.1rem;
+    font-weight: 600;
+}
+
+.chart-empty .description {
+    font-size: 0.9rem;
+    margin-top: var(--spacing-xs);
+}
+
+/* ==================== 图例自定义 ==================== */
+.chart-legend {
+    display: flex;
+    justify-content: center;
+    gap: var(--spacing-lg);
+    margin-top: var(--spacing);
+    flex-wrap: wrap;
+}
+
+.chart-legend-item {
+    display: flex;
+    align-items: center;
+    gap: var(--spacing-xs);
+    cursor: pointer;
+    transition: opacity var(--transition);
+}
+
+.chart-legend-item:hover {
+    opacity: 0.7;
+}
+
+.chart-legend-item.disabled {
+    opacity: 0.4;
+}
+
+.chart-legend-color {
+    width: 20px;
+    height: 4px;
+    border-radius: 2px;
+}
+
+.chart-legend-label {
+    font-size: 0.9rem;
+    color: var(--gray-700);
+    font-weight: 500;
+}
+
+/* ==================== 时间范围选择器 ==================== */
+.time-range-selector {
+    display: flex;
+    gap: var(--spacing-xs);
+    background: var(--gray-100);
+    padding: 4px;
+    border-radius: var(--radius);
+}
+
+.time-range-btn {
+    padding: 8px 16px;
+    border: none;
+    background: transparent;
+    color: var(--gray-600);
+    font-size: 0.875rem;
+    font-weight: 600;
+    cursor: pointer;
+    border-radius: var(--radius-sm);
+    transition: all var(--transition);
+}
+
+.time-range-btn:hover {
+    background: white;
+    color: var(--gray-800);
+}
+
+.time-range-btn.active {
+    background: var(--primary-color);
+    color: white;
+}
+
+/* ==================== 图表网格布局 ==================== */
+.charts-grid {
+    display: grid;
+    gap: var(--spacing-lg);
+    margin-bottom: var(--spacing-lg);
+}
+
+.charts-grid.layout-1 {
+    grid-template-columns: 1fr;
+}
+
+.charts-grid.layout-2 {
+    grid-template-columns: repeat(2, 1fr);
+}
+
+.charts-grid.layout-3 {
+    grid-template-columns: repeat(3, 1fr);
+}
+
+.charts-grid.layout-2-1 {
+    grid-template-columns: 2fr 1fr;
+}
+
+.charts-grid.layout-1-2 {
+    grid-template-columns: 1fr 2fr;
+}
+
+/* ==================== 数据点提示 ==================== */
+.chart-tooltip {
+    background: rgba(0, 0, 0, 0.8);
+    color: white;
+    padding: var(--spacing-sm);
+    border-radius: var(--radius-sm);
+    font-size: 0.875rem;
+    max-width: 250px;
+}
+
+.chart-tooltip-title {
+    font-weight: 700;
+    margin-bottom: var(--spacing-xs);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.3);
+    padding-bottom: var(--spacing-xs);
+}
+
+.chart-tooltip-item {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--spacing);
+    margin-top: var(--spacing-xs);
+}
+
+.chart-tooltip-label {
+    opacity: 0.8;
+}
+
+.chart-tooltip-value {
+    font-weight: 700;
+}
+
+/* ==================== 图表注释 ==================== */
+.chart-annotation {
+    position: absolute;
+    background: rgba(102, 126, 234, 0.9);
+    color: white;
+    padding: 6px 12px;
+    border-radius: var(--radius-sm);
+    font-size: 0.75rem;
+    font-weight: 600;
+    pointer-events: none;
+    white-space: nowrap;
+}
+
+.chart-annotation::after {
+    content: '';
+    position: absolute;
+    bottom: -4px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 0;
+    height: 0;
+    border-left: 4px solid transparent;
+    border-right: 4px solid transparent;
+    border-top: 4px solid rgba(102, 126, 234, 0.9);
+}
+
+/* ==================== 频谱图特殊样式 ==================== */
+.spectrum-info {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: var(--spacing);
+    margin-top: var(--spacing);
+    padding: var(--spacing);
+    background: var(--gray-50);
+    border-radius: var(--radius);
+}
+
+.spectrum-info-item {
+    text-align: center;
+}
+
+.spectrum-info-label {
+    font-size: 0.875rem;
+    color: var(--gray-600);
+    margin-bottom: var(--spacing-xs);
+}
+
+.spectrum-info-value {
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: var(--primary-color);
+}
+
+/* ==================== 图表全屏模式 ==================== */
+.chart-fullscreen {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: white;
+    z-index: 9999;
+    padding: var(--spacing-lg);
+    overflow: auto;
+}
+
+.chart-fullscreen .chart-wrapper {
+    height: calc(100vh - 120px);
+}
+
+.chart-fullscreen-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--spacing-lg);
+    padding-bottom: var(--spacing);
+    border-bottom: 2px solid var(--gray-200);
+}
+
+.chart-fullscreen-close {
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    border: none;
+    background: var(--gray-100);
+    color: var(--gray-700);
+    font-size: 1.5rem;
+    cursor: pointer;
+    transition: all var(--transition);
+}
+
+.chart-fullscreen-close:hover {
+    background: var(--error-color);
+    color: white;
+}
+
+/* ==================== 对比图表 ==================== */
+.chart-comparison {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--spacing-lg);
+}
+
+.chart-comparison-item {
+    background: white;
+    padding: var(--spacing);
+    border-radius: var(--radius);
+    border: 2px solid var(--gray-200);
+}
+
+.chart-comparison-item.highlighted {
+    border-color: var(--primary-color);
+}
+
+/* ==================== 响应式调整 ==================== */
+@media (max-width: 1024px) {
+    .charts-grid.layout-2,
+    .charts-grid.layout-3,
+    .charts-grid.layout-2-1,
+    .charts-grid.layout-1-2 {
+        grid-template-columns: 1fr;
+    }
+
+    .chart-comparison {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 768px) {
+    .chart-toolbar {
+        flex-direction: column;
+        gap: var(--spacing-sm);
+    }
+
+    .chart-toolbar-left,
+    .chart-toolbar-right {
+        width: 100%;
+        justify-content: space-between;
+    }
+
+    .chart-wrapper.chart-md,
+    .chart-wrapper.chart-lg {
+        height: 300px;
+    }
+
+    .time-range-selector {
+        flex-wrap: wrap;
+    }
+
+    .chart-card-header {
+        flex-direction: column;
+        gap: var(--spacing-sm);
+        align-items: flex-start;
+    }
+
+    .spectrum-info {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 480px) {
+    .chart-legend {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .chart-wrapper.chart-sm {
+        height: 200px;
+    }
+
+    .chart-card {
+        padding: var(--spacing);
+    }
+}

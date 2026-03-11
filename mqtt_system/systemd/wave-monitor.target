@@ -1,0 +1,7 @@
+[Unit]
+Description=Wave Monitoring System Services
+After=network.target mosquitto.service postgresql.service
+Wants=mosquitto.service postgresql.service
+
+[Install]
+WantedBy=multi-user.target

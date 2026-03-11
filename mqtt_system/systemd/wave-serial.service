@@ -1,0 +1,21 @@
+[Unit]
+Description=Wave Monitoring - Serial Console Service
+After=network.target mosquitto.service wave-analyzer.service
+Wants=mosquitto.service
+PartOf=wave-monitor.target
+
+[Service]
+Type=simple
+User=pi
+Group=plugdev
+WorkingDirectory=/home/pi/radar/mqtt_system/services
+ExecStart=/home/pi/radar/mqtt_system/venv/bin/python3 /home/pi/radar/mqtt_system/services/serial_console.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+Environment="PYTHONUNBUFFERED=1"
+
+[Install]
+WantedBy=multi-user.target
