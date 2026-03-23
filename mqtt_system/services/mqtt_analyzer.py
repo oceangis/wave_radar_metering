@@ -31,6 +31,7 @@ import time
 import paho.mqtt.client as mqtt
 import numpy as np
 import pandas as pd
+import psycopg2
 from scipy.signal import welch, csd, detrend, butter, filtfilt
 
 # Import directional spectrum analyzer
@@ -74,7 +75,8 @@ class WaveAnalyzer:
                         'R2': [-0.1333, 0.2309, 0.0],
                         'R3': [0.1333, 0.2309, 0.0]
                     }),
-                    'array_height': config.get('radar', {}).get('array_height', 5.0),
+                    'array_height': config.get('radar', {}).get('elevation_85',
+                                    config.get('radar', {}).get('array_height', 5.0)),
                     'tilt_angles': config.get('radar', {}).get('tilt_angles', {
                         'R1': 0.0, 'R2': 10.0, 'R3': 10.0
                     }),
@@ -107,10 +109,16 @@ class WaveAnalyzer:
             result[i] = datetime.fromisoformat(ts.replace('Z', '+00:00')).timestamp()
         return result
 
-    def _prepare_wave_data(self, distances: np.ndarray, timestamps: list) -> Dict:
+    def _prepare_wave_data(self, distances: np.ndarray, timestamps: list,
+                           mode: str = 'work', pass2_constraints: Dict = None) -> Dict:
         """
-        验证过的波浪数据准备方法（精确周期计算）:
-        1. 去尖刺 (绝对范围 + IQR离群值 + 逐点跳变>500mm，线性插值替换)
+        波浪数据准备方法（SWAP标准质量控制）:
+        1. 去尖刺: SWAP 4σ/4δ 自适应质量控制（Rijkswaterstaat, 1994）
+           - 0-sigma: 恒定值检测（>10秒不变）
+           - 4-sigma: 幅度异常值（|x-μ| > 4σ, 自适应于波高）
+           - 4-delta: 跳变异常值（|Δx| > 4δ, 自适应于变化率）
+           - meter模式额外: MAD + 局部滑窗 + 固定跳变阈值
+           - 第二遍(pass2_constraints): 基于第一遍H1/3、T1/3收紧物理约束
         2. η = -(distance - median(distance))
         3. 用实际时间戳计算真实采样率
         4. 线性插值重采样到等间隔6Hz（用于Welch谱分析）
@@ -119,6 +127,12 @@ class WaveAnalyzer:
         Args:
             distances: 原始测距数组(m)
             timestamps: ISO时间戳列表
+            mode: 分析模式 ('meter' 或 'work')
+            pass2_constraints: 第二遍物理约束 {
+                'H13': 粗估有效波高(m),
+                'T13': 粗估有效波周期(s),
+                'median_dist': 第一遍中位数距离(m)
+            }
 
         Returns:
             dict: {
@@ -141,56 +155,275 @@ class WaveAnalyzer:
         # 实际采样率
         actual_fs = (len(distances) - 1) / duration if duration > 0 else self.sample_rate
 
-        # 1. 去尖刺 (增强版：绝对范围 + IQR + 跳变过滤)
+        # 1. 去尖刺 — SWAP 4σ/4δ 质量控制方法
+        # 参考: Mathematical description of the Standard Wave Analysis Package
+        #       (Rijkswaterstaat, 1994, Section 3.4)
+        # 三个测试按顺序执行，已标记的点不参与后续统计
         dist_clean = distances.copy()
+        is_meter = (mode == 'meter')
+        meter_cfg = self.config['analysis'].get('meter_filter', {})
+        # QC和潮位统一用 elevation_85（安装时填估计值，测量后更新精确值）
+        array_height = self.config['radar'].get('elevation_85',
+                       self.config['radar'].get('array_height', 5.0))
 
-        # 第0轮: 绝对范围过滤（防止水花飞溅或多径反射导致的异常值）
-        # 测距值 = array_height - water_level，有效范围: [盲区下限, 安装高度]
-        array_height = self.config['radar'].get('array_height', 5.0)
-        abs_lower = 0.3   # 雷达盲区下限（VEGA最小测距约0.3m）
-        abs_upper = array_height + 0.5  # 最大测距不超过安装高度+余量
+        # ── 第0轮: 绝对范围过滤 ──
+        two_pass_cfg = self.config['analysis'].get('two_pass', {})
+        prior_cfg = self.config['analysis'].get('prior_knowledge', {})
+        is_pass2 = (pass2_constraints is not None)
+
+        if is_meter and meter_cfg.get('enabled', False):
+            # meter模式：安装高度已知、波高已知，用紧凑范围获得最佳精度
+            abs_margin = meter_cfg.get('abs_margin', 0.3)
+            abs_lower = 0.3
+            abs_upper = array_height + abs_margin
+        elif is_pass2:
+            # work模式第二遍：用第一遍H1/3收紧绝对范围
+            h13 = pass2_constraints['H13']
+            median_dist = pass2_constraints['median_dist']
+            abs_mult = two_pass_cfg.get('abs_range_multiplier', 3.0)
+            # 距离偏移 = 波面振幅 ≈ H1/3，乘安全系数
+            excursion = max(abs_mult * h13, 0.5)  # 至少±0.5m
+            abs_lower = max(0.3, median_dist - excursion)
+            abs_upper = median_dist + excursion
+            # 如果有先验知识，叠加硬上限
+            if prior_cfg.get('enabled', False):
+                max_hw = prior_cfg.get('max_wave_height', 10.0)
+                tidal_r = prior_cfg.get('tidal_range', 5.0)
+                # 物理硬上限：安装高度 + 潮差/2 + 最大波高振幅
+                hard_upper = array_height + tidal_r / 2 + max_hw / 2
+                hard_lower = max(0.3, array_height - tidal_r / 2 - max_hw / 2)
+                abs_upper = min(abs_upper, hard_upper)
+                abs_lower = max(abs_lower, hard_lower)
+            logging.info(f"Pass2 abs range: [{abs_lower:.2f}, {abs_upper:.2f}]m "
+                         f"(H1/3={h13:.3f}m, median={median_dist:.3f}m)")
+        else:
+            # work模式第一遍
+            if prior_cfg.get('enabled', False):
+                # 有先验知识：以安装高度为锚点（已知常量，不受噪声影响）
+                # 范围 = array_height ± (潮差/2 + 最大波高振幅)
+                max_hw = prior_cfg.get('max_wave_height', 6.0)
+                tidal_r = prior_cfg.get('tidal_range', 3.0)
+                max_excursion = tidal_r / 2 + max_hw / 2
+                center = array_height  # 用已知安装高度，不用median
+                abs_lower = max(0.3, center - max_excursion)
+                abs_upper = center + max_excursion
+                logging.info(f"Pass1 prior: center=array_height={array_height:.2f}m, "
+                             f"range=[{abs_lower:.2f}, {abs_upper:.2f}]m "
+                             f"(tidal={tidal_r}m, max_wave={max_hw}m)")
+            else:
+                # 无先验知识：退回中位数自适应（兼容未配置先验的部署）
+                median_raw = np.median(dist_clean)
+                max_excursion = 3.0
+                center = median_raw
+                abs_lower = max(0.3, center - max_excursion)
+                abs_upper = center + max_excursion
         spike_abs = (dist_clean < abs_lower) | (dist_clean > abs_upper)
         n_abs_spikes = int(np.sum(spike_abs))
-
         if n_abs_spikes > 0:
-            # 先用中位数替换绝对异常值，避免影响后续统计
             median_dist = np.median(dist_clean[~spike_abs]) if np.any(~spike_abs) else np.median(dist_clean)
             dist_clean[spike_abs] = median_dist
-            logging.info(f"Absolute range filter: {n_abs_spikes} points outside [{abs_lower:.2f}, {abs_upper:.2f}]m (splash/reflection)")
+            logging.info(f"Absolute range filter: {n_abs_spikes} points outside "
+                         f"[{abs_lower:.2f}, {abs_upper:.2f}]m")
 
-        # 第1轮: IQR离群值检测（基于中位数，更鲁棒）
-        q25, q75 = np.percentile(dist_clean, [25, 75])
-        iqr = q75 - q25
-        if iqr < 0.001:
-            iqr = 0.001  # 避免除零
-        lower = q25 - 3.0 * iqr
-        upper = q75 + 3.0 * iqr
-        spike_iqr = (dist_clean < lower) | (dist_clean > upper)
+        if is_meter and meter_cfg.get('enabled', False):
+            # ── meter模式: IQR + 固定跳变阈值（计量专用，已调优）──
+            iqr_mult = meter_cfg.get('iqr_multiplier', 1.5)
+            jump_thresh = meter_cfg.get('jump_threshold', 0.15)
 
-        # 第2轮: 逐点跳变 > 500mm（增加阈值，捕捉造波飞溅）
-        d_temp = dist_clean.copy()
-        if np.any(spike_iqr):
-            good_temp = ~spike_iqr
-            if np.sum(good_temp) > 10:
-                d_temp[spike_iqr] = np.interp(
-                    np.where(spike_iqr)[0],
-                    np.where(good_temp)[0],
-                    d_temp[good_temp]
-                )
-        diff = np.abs(np.diff(d_temp))
-        spike_jump_fwd = np.concatenate(([False], diff > 0.5))  # 提高到500mm
-        spike_jump_bwd = np.concatenate((diff > 0.5, [False]))
+            q25, q75 = np.percentile(dist_clean, [25, 75])
+            iqr = max(q75 - q25, 0.001)
+            lower = q25 - iqr_mult * iqr
+            upper = q75 + iqr_mult * iqr
+            spike_iqr = (dist_clean < lower) | (dist_clean > upper)
 
-        spike_mask = spike_iqr | spike_jump_fwd | spike_jump_bwd
-        n_spikes = int(np.sum(spike_mask))
-        if n_spikes > 0:
-            good = ~spike_mask
-            if np.any(good):
-                dist_clean[spike_mask] = np.interp(
-                    np.where(spike_mask)[0],
-                    np.where(good)[0],
-                    dist_clean[good]
-                )
+            d_temp = dist_clean.copy()
+            if np.any(spike_iqr):
+                good_temp = ~spike_iqr
+                if np.sum(good_temp) > 10:
+                    d_temp[spike_iqr] = np.interp(
+                        np.where(spike_iqr)[0],
+                        np.where(good_temp)[0],
+                        d_temp[good_temp])
+            diff = np.abs(np.diff(d_temp))
+            spike_jump_fwd = np.concatenate(([False], diff > jump_thresh))
+            spike_jump_bwd = np.concatenate((diff > jump_thresh, [False]))
+
+            spike_mask = spike_abs | spike_iqr | spike_jump_fwd | spike_jump_bwd
+            n_spikes = int(np.sum(spike_mask))
+            if n_spikes > 0:
+                good = ~spike_mask
+                if np.any(good):
+                    dist_clean[spike_mask] = np.interp(
+                        np.where(spike_mask)[0],
+                        np.where(good)[0],
+                        dist_clean[good])
+                logging.info(f"Meter QC: {n_spikes} points "
+                             f"(IQR×{iqr_mult}, jump>{jump_thresh*1000:.0f}mm)")
+
+        else:
+            # ── work模式: SWAP σ/δ 自适应质量控制 ──
+            # 参考: SWAP (Rijkswaterstaat, 1994, Section 3.4)
+            # 第一遍: 4σ/4δ（宽松）；第二遍: 基于H1/3物理约束收紧
+
+            # 确定σ/δ乘数
+            if is_pass2:
+                sigma_mult = two_pass_cfg.get('sigma_multiplier', 3.0)
+                delta_mult = two_pass_cfg.get('delta_multiplier', 3.0)
+                pass_label = "Pass2"
+            else:
+                sigma_mult = 4.0
+                delta_mult = 4.0
+                pass_label = "Pass1"
+
+            # 0-sigma测试: 连续10秒恒定值 → 异常（雷达失锁检测）
+            flat_duration = 10.0
+            flat_samples = max(3, int(flat_duration * self.sample_rate))
+            spike_flat = np.zeros(len(dist_clean), dtype=bool)
+            for i in range(len(dist_clean) - flat_samples + 1):
+                segment = dist_clean[i:i + flat_samples]
+                if np.max(segment) - np.min(segment) < 0.001:
+                    spike_flat[i:i + flat_samples] = True
+            n_flat = int(np.sum(spike_flat & ~spike_abs))
+            if n_flat > 0:
+                good_flat = ~(spike_abs | spike_flat)
+                if np.any(good_flat):
+                    dist_clean[spike_flat] = np.interp(
+                        np.where(spike_flat)[0],
+                        np.where(good_flat)[0],
+                        dist_clean[good_flat])
+                logging.info(f"0-sigma test: {n_flat} points (>{flat_duration:.0f}s constant)")
+
+            # σ测试: |x_i - μ| > Nσ·σ → 异常（幅度异常值）
+            valid_mask = ~(spike_abs | spike_flat)
+            if np.sum(valid_mask) > 10:
+                mu = np.mean(dist_clean[valid_mask])
+                sigma = np.std(dist_clean[valid_mask])
+                if sigma < 1e-6:
+                    sigma = 1e-6
+                spike_sigma = np.abs(dist_clean - mu) > sigma_mult * sigma
+                spike_sigma &= valid_mask
+            else:
+                spike_sigma = np.zeros(len(dist_clean), dtype=bool)
+                mu, sigma = 0, 0
+            n_sigma = int(np.sum(spike_sigma))
+
+            all_bad = spike_abs | spike_flat | spike_sigma
+            if n_sigma > 0:
+                good_s = ~all_bad
+                if np.any(good_s):
+                    dist_clean[spike_sigma] = np.interp(
+                        np.where(spike_sigma)[0],
+                        np.where(good_s)[0],
+                        dist_clean[good_s])
+                logging.info(f"{pass_label} {sigma_mult:.0f}-sigma test: {n_sigma} points "
+                             f"(σ={sigma*1000:.1f}mm, ±{sigma_mult*sigma*1000:.0f}mm)")
+
+            # δ测试: |Δx_i| > Nδ·δ → 异常（跳变异常值）
+            diffs = np.abs(np.diff(dist_clean))
+            valid_diffs = diffs[~all_bad[:-1] & ~all_bad[1:]]
+
+            # 第二遍：跳变阈值可用物理波陡极限替代纯统计δ
+            if is_pass2 and two_pass_cfg.get('jump_use_steepness', True):
+                h13 = pass2_constraints['H13']
+                t13 = pass2_constraints['T13']
+                steepness_factor = two_pass_cfg.get('jump_steepness_factor', 1.5)
+                # 波面最大垂直速度 = π·H/T（线性波理论）
+                max_velocity = np.pi * h13 / t13 if t13 > 0 else 2.0
+                # 每采样点最大跳变 = max_velocity / sample_rate
+                delta_threshold = steepness_factor * max_velocity / self.sample_rate
+                logging.info(f"Pass2 steepness jump: threshold={delta_threshold*1000:.1f}mm/sample "
+                             f"(π·{h13:.3f}/{t13:.2f}×{steepness_factor}÷{self.sample_rate})")
+                spike_delta_fwd = np.concatenate(([False], diffs > delta_threshold))
+                spike_delta_bwd = np.concatenate((diffs > delta_threshold, [False]))
+                spike_delta = spike_delta_fwd | spike_delta_bwd
+            elif len(valid_diffs) > 10:
+                delta = np.std(valid_diffs)
+                if delta < 1e-6:
+                    delta = 1e-6
+                spike_delta_fwd = np.concatenate(([False], diffs > delta_mult * delta))
+                spike_delta_bwd = np.concatenate((diffs > delta_mult * delta, [False]))
+                spike_delta = spike_delta_fwd | spike_delta_bwd
+            else:
+                spike_delta = np.zeros(len(dist_clean), dtype=bool)
+                delta = 0
+            n_delta = int(np.sum(spike_delta & ~all_bad))
+
+            spike_mask = all_bad | spike_delta
+            n_spikes = int(np.sum(spike_mask))
+            if np.sum(spike_delta & ~all_bad) > 0:
+                good = ~spike_mask
+                if np.any(good):
+                    dist_clean[spike_mask] = np.interp(
+                        np.where(spike_mask)[0],
+                        np.where(good)[0],
+                        dist_clean[good])
+                logging.info(f"{pass_label} delta test: {n_delta} points")
+
+            logging.info(f"{pass_label} SWAP QC: {n_spikes} points "
+                         f"(abs={n_abs_spikes}, flat={n_flat}, "
+                         f"σ={n_sigma}, δ={n_delta})")
+
+        # ── 计量模式：额外多轮去刺（meter专用，work不执行）──
+        n_extra_spikes = 0
+        if is_meter and meter_cfg.get('enabled', False):
+            n_iterations = meter_cfg.get('despike_iterations', 2)
+            mad_thresh = meter_cfg.get('mad_threshold', 3.0)
+            local_win = meter_cfg.get('local_window', 31)
+            local_thresh = meter_cfg.get('local_threshold', 3.5)
+            jump_thresh = meter_cfg.get('jump_threshold', 0.15)
+
+            for iteration in range(n_iterations):
+                iter_mask = np.zeros(len(dist_clean), dtype=bool)
+
+                # MAD离群值检测
+                unique_mask = np.concatenate(([True], dist_clean[1:] != dist_clean[:-1]))
+                data_unique = dist_clean[unique_mask]
+                med = np.median(dist_clean)
+                if len(data_unique) > 10:
+                    mad = np.median(np.abs(data_unique - np.median(data_unique)))
+                else:
+                    mad = np.median(np.abs(dist_clean - med))
+                if mad < 1e-6:
+                    mad = 1e-6
+                mad_z = 0.6745 * np.abs(dist_clean - med) / mad
+                iter_mask |= (mad_z > mad_thresh)
+
+                # 局部滑窗异常检测
+                if len(dist_clean) >= local_win:
+                    import pandas as pd
+                    s = pd.Series(dist_clean)
+                    roll_med = s.rolling(local_win, center=True, min_periods=3).median()
+                    roll_mad = s.rolling(local_win, center=True, min_periods=3).apply(
+                        lambda x: np.median(np.abs(x - np.median(x))), raw=True
+                    )
+                    roll_mad_arr = roll_mad.values.copy()
+                    roll_mad_arr[roll_mad_arr < 1e-6] = 1e-6
+                    roll_med_arr = roll_med.values.copy()
+                    local_z = 0.6745 * np.abs(dist_clean - roll_med_arr) / roll_mad_arr
+                    iter_mask |= (local_z > local_thresh)
+
+                # 固定阈值跳变（meter专用，更紧）
+                diff2 = np.abs(np.diff(dist_clean))
+                jump_fwd2 = np.concatenate(([False], diff2 > jump_thresh))
+                jump_bwd2 = np.concatenate((diff2 > jump_thresh, [False]))
+                iter_mask |= jump_fwd2 | jump_bwd2
+
+                n_iter_spikes = int(np.sum(iter_mask))
+                if n_iter_spikes == 0:
+                    break
+
+                n_extra_spikes += n_iter_spikes
+                good2 = ~iter_mask
+                if np.any(good2):
+                    dist_clean[iter_mask] = np.interp(
+                        np.where(iter_mask)[0],
+                        np.where(good2)[0],
+                        dist_clean[good2]
+                    )
+                logging.info(f"Meter despike iteration {iteration+1}: "
+                             f"{n_iter_spikes} additional spikes (MAD+local+jump)")
+
+        n_spikes += n_extra_spikes
 
         # 2. η = -(distance - median)  使用中位数更鲁棒
         median_dist = np.median(dist_clean)
@@ -207,9 +440,12 @@ class WaveAnalyzer:
             eta_resampled = eta_orig
             target_fs = actual_fs
 
-        if n_spikes > 0:
-            logging.info(f"Spike removal: {n_spikes} points (IQR+jump filter, "
-                         f"IQR={iqr*1000:.0f}mm, range=[{lower:.3f},{upper:.3f}]m)")
+        if n_spikes > 0 and not (is_meter and meter_cfg.get('enabled', False)):
+            # work模式的总结日志（meter模式已在上面输出）
+            pass
+        if n_spikes + n_extra_spikes > 0:
+            logging.info(f"QC total: {n_spikes + n_extra_spikes} points removed"
+                         f"{f' (meter extra={n_extra_spikes})' if n_extra_spikes > 0 else ''}")
         logging.info(f"Data prepared: actual_fs={actual_fs:.2f}Hz, "
                      f"resampled {len(distances)}->{len(eta_resampled)} @ {target_fs}Hz")
 
@@ -222,6 +458,55 @@ class WaveAnalyzer:
             'actual_fs': actual_fs,
             'raw_distances': dist_clean
         }
+
+    def _quick_zero_crossing(self, eta: np.ndarray, t_seconds: np.ndarray = None) -> Dict:
+        """快速过零法 — 仅返回粗估 H1/3 和 T1/3，用于两遍分析的第一遍
+
+        不做过零法QC（异常波剔除、波高截断），只需大致估计。
+        噪声只会高估 H1/3，因此作为第二遍约束的安全上界。
+        """
+        # 去趋势+带通滤波
+        band = self.config['analysis']['filter_band']
+        zc_eta = detrend(eta)
+        if self.config['analysis']['filter_enable'] and t_seconds is not None and len(t_seconds) > 1:
+            f_low = max(band[0], 0.01)
+            zc_fs = (len(eta) - 1) / (t_seconds[-1] - t_seconds[0]) if t_seconds[-1] > t_seconds[0] else self.sample_rate
+            b, a = butter(4, band, btype='band', fs=zc_fs)
+            padlen = min(3 * int(zc_fs / f_low), len(zc_eta) - 1)
+            zc_eta = filtfilt(b, a, zc_eta, padlen=padlen)
+
+        # 上穿零点
+        crossings = []
+        for i in range(len(zc_eta) - 1):
+            if zc_eta[i] < 0 and zc_eta[i + 1] >= 0:
+                crossings.append(i)
+
+        if len(crossings) < 4:
+            return {'H13': 0.0, 'T13': 0.0, 'wave_count': 0}
+
+        heights, periods = [], []
+        for i in range(len(crossings) - 1):
+            s, e = crossings[i], crossings[i + 1]
+            if e - s < 2:
+                continue
+            seg = zc_eta[s:e]
+            H = np.max(seg) - np.min(seg)
+            T = (t_seconds[e] - t_seconds[s]) if t_seconds is not None else (e - s) / self.sample_rate
+            if H > 0 and T > 0:
+                heights.append(H)
+                periods.append(T)
+
+        if len(heights) < 3:
+            return {'H13': 0.0, 'T13': 0.0, 'wave_count': 0}
+
+        heights = np.array(heights)
+        periods = np.array(periods)
+        n13 = max(1, len(heights) // 3)
+        sorted_idx = np.argsort(heights)[::-1]
+        H13 = float(np.mean(heights[sorted_idx[:n13]]))
+        T13 = float(np.mean(periods[sorted_idx[:n13]]))
+
+        return {'H13': H13, 'T13': T13, 'wave_count': len(heights)}
 
     def _interpolate_to_reference(self, t_ref, t_src, values):
         """将values从t_src时间轴插值到t_ref时间轴
@@ -239,14 +524,113 @@ class WaveAnalyzer:
             return values
         return np.interp(t_ref, t_src[valid], values[valid])
 
-    def analyze_window(self, data: Dict) -> Optional[Dict]:
-        """分析一个时间窗口的数据 - 支持1-3个雷达"""
+    def analyze_window(self, data: Dict, mode: str = 'work') -> Optional[Dict]:
+        """分析一个时间窗口的数据 - 支持1-3个雷达
+
+        Args:
+            data: 数据窗口字典
+            mode: 分析模式 ('meter' 或 'work')
+        """
         try:
+            # 计量模式专用滤波参数
+            is_meter = (mode == 'meter')
+            meter_cfg = self.config['analysis'].get('meter_filter', {})
+            if is_meter and meter_cfg.get('enabled', False):
+                logging.info("Meter mode filter: using strict filtering parameters for metrological calibration")
+
             # 提取数据
             timestamps = data['timestamps']
             eta1 = np.array(data['eta1'])
             eta2 = np.array(data['eta2'])
             eta3 = np.array(data['eta3'])
+
+            # meter模式：保存原始数据副本，方向分析用轻量预处理保留相位信息
+            if is_meter and meter_cfg.get('enabled', False):
+                eta1_raw_for_dir = eta1.copy()
+                eta2_raw_for_dir = eta2.copy()
+                eta3_raw_for_dir = eta3.copy()
+
+            # R1参考滤波：用R1数据检测R2/R3的飞点
+            # R1是垂直雷达数据最干净，正常情况下|R2-R1|和|R3-R1|不超过几百mm
+            # 超过阈值的点用R1值替换（保留相位关系优于插值）
+            if is_meter and meter_cfg.get('enabled', False):
+                r1_ref_threshold = meter_cfg.get('r1_ref_threshold', 0.08)
+            else:
+                r1_ref_threshold = self.config['analysis'].get('r1_ref_threshold', 0.5)
+            eta1_valid = ~np.isnan(eta1)
+            eta2_valid = ~np.isnan(eta2)
+            eta3_valid = ~np.isnan(eta3)
+            both_12 = eta1_valid & eta2_valid
+            both_13 = eta1_valid & eta3_valid
+            if np.any(both_12):
+                spike_r2 = both_12 & (np.abs(eta2 - eta1) > r1_ref_threshold)
+                n_r2_spikes = int(np.sum(spike_r2))
+                if n_r2_spikes > 0:
+                    eta2[spike_r2] = eta1[spike_r2]
+                    logging.info(f"R1-ref filter: R2 {n_r2_spikes} spikes replaced "
+                                 f"(threshold={r1_ref_threshold*1000:.0f}mm)")
+            if np.any(both_13):
+                spike_r3 = both_13 & (np.abs(eta3 - eta1) > r1_ref_threshold)
+                n_r3_spikes = int(np.sum(spike_r3))
+                if n_r3_spikes > 0:
+                    eta3[spike_r3] = eta1[spike_r3]
+                    logging.info(f"R1-ref filter: R3 {n_r3_spikes} spikes replaced "
+                                 f"(threshold={r1_ref_threshold*1000:.0f}mm)")
+
+            # Meter模式：η域激进去尖刺
+            if is_meter and meter_cfg.get('enabled', False):
+                from scipy.signal import medfilt
+
+                # (a) R1也做中值滤波（R1虽最干净但仍有毛刺）
+                r1_medfilt_win = meter_cfg.get('r1_medfilt_window', 5)
+                if r1_medfilt_win > 1 and np.sum(eta1_valid) > r1_medfilt_win:
+                    eta1_before = eta1.copy()
+                    eta1[eta1_valid] = medfilt(eta1[eta1_valid], kernel_size=r1_medfilt_win)
+                    r1_medfilt_change = np.mean(np.abs(eta1[eta1_valid] - eta1_before[eta1_valid])) * 1000
+                    logging.info(f"Meter R1 median filter (win={r1_medfilt_win}): "
+                                 f"avg change={r1_medfilt_change:.1f}mm")
+
+                # (b) R2/R3中值滤波（加宽窗口）
+                medfilt_win = meter_cfg.get('r23_medfilt_window', 7)
+                if medfilt_win > 1:
+                    eta2_before = eta2.copy()
+                    eta3_before = eta3.copy()
+                    if np.sum(eta2_valid) > medfilt_win:
+                        eta2[eta2_valid] = medfilt(eta2[eta2_valid], kernel_size=medfilt_win)
+                    if np.sum(eta3_valid) > medfilt_win:
+                        eta3[eta3_valid] = medfilt(eta3[eta3_valid], kernel_size=medfilt_win)
+                    r2_medfilt_change = np.mean(np.abs(eta2[eta2_valid] - eta2_before[eta2_valid])) * 1000 if np.any(eta2_valid) else 0
+                    r3_medfilt_change = np.mean(np.abs(eta3[eta3_valid] - eta3_before[eta3_valid])) * 1000 if np.any(eta3_valid) else 0
+                    logging.info(f"Meter R2/R3 median filter (win={medfilt_win}): "
+                                 f"R2 avg change={r2_medfilt_change:.1f}mm, R3 avg change={r3_medfilt_change:.1f}mm")
+
+                # (c) η域MAD尖刺检测：中值滤波后仍可能有阈值内的残余尖刺
+                eta_mad_thresh = meter_cfg.get('mad_threshold', 3.0)
+                for radar_name, eta_arr, valid_mask in [('R1', eta1, eta1_valid),
+                                                         ('R2', eta2, eta2_valid),
+                                                         ('R3', eta3, eta3_valid)]:
+                    if np.sum(valid_mask) < 20:
+                        continue
+                    vals = eta_arr[valid_mask]
+                    med_eta = np.median(vals)
+                    mad_eta = np.median(np.abs(vals - med_eta))
+                    if mad_eta < 1e-6:
+                        mad_eta = 1e-6
+                    z_scores = 0.6745 * np.abs(vals - med_eta) / mad_eta
+                    spike_eta = z_scores > eta_mad_thresh
+                    n_eta_spikes = int(np.sum(spike_eta))
+                    if n_eta_spikes > 0:
+                        # 用线性插值替换η域尖刺
+                        idx_valid = np.where(valid_mask)[0]
+                        good_in_window = ~spike_eta
+                        if np.sum(good_in_window) > 2:
+                            vals[spike_eta] = np.interp(
+                                np.where(spike_eta)[0],
+                                np.where(good_in_window)[0],
+                                vals[good_in_window]
+                            )
+                            eta_arr[valid_mask] = vals
+                            logging.info(f"Meter η-MAD filter {radar_name}: {n_eta_spikes} spikes interpolated")
 
             # 将各雷达数据插值对齐到R1的时间轴
             # 各雷达Modbus读取延迟不同，存在真实时间差
@@ -300,15 +684,36 @@ class WaveAnalyzer:
                     logging.warning(f"Insufficient valid data for single radar: {len(eta1_valid)} samples")
                     return None
 
-                # 数据准备（验证过的方法：去尖刺→转η→重采样）
-                prep = self._prepare_wave_data(eta1_valid, ts1_valid)
+                # 两遍分析（单雷达）
+                two_pass_cfg = self.config['analysis'].get('two_pass', {})
+                use_two_pass = (not is_meter and two_pass_cfg.get('enabled', False))
+                pass2_constraints = None
+                if use_two_pass:
+                    logging.info("=== Single radar two-pass: Pass 1 ===")
+                    prep_p1 = self._prepare_wave_data(eta1_valid, ts1_valid, mode=mode)
+                    qzc = self._quick_zero_crossing(prep_p1['eta_original'], prep_p1['t_seconds'])
+                    h13_est, t13_est = qzc['H13'], qzc['T13']
+                    median_dist = np.median(prep_p1['raw_distances'])
+                    spike_ratio = prep_p1['n_spikes'] / len(eta1_valid) if len(eta1_valid) > 0 else 0
+                    min_h13 = two_pass_cfg.get('min_h13', 0.05)
+                    max_spike_ratio = two_pass_cfg.get('max_spike_ratio_pass1', 0.30)
+                    if h13_est > min_h13 and t13_est > 0 and spike_ratio < max_spike_ratio:
+                        pass2_constraints = {'H13': max(h13_est, min_h13), 'T13': t13_est, 'median_dist': median_dist}
+                        logging.info(f"Pass1: H1/3={h13_est*1000:.1f}mm, T1/3={t13_est:.2f}s → Pass 2")
+                    else:
+                        logging.info(f"Pass1 quality insufficient, using pass1 result")
+
+                # 数据准备（去尖刺→转η→重采样）
+                prep = self._prepare_wave_data(eta1_valid, ts1_valid, mode=mode,
+                                                pass2_constraints=pass2_constraints)
 
                 # 单雷达分析（Welch用重采样数据，过零法用原始时间戳）
                 params1 = self._analyze_single_radar(
                     prep['eta_resampled'], prep['raw_distances'],
                     fs=prep['fs'],
                     t_seconds=prep['t_seconds'],
-                    eta_original=prep['eta_original']
+                    eta_original=prep['eta_original'],
+                    mode=mode
                 )
                 eta1_clean = prep['eta_resampled']
                 _actual_fs = prep['actual_fs']
@@ -443,8 +848,29 @@ class WaveAnalyzer:
                     logging.warning(f"Insufficient valid data for dual radar: {len(eta_a_valid)} samples")
                     return None
 
-                prep_a = self._prepare_wave_data(eta_a_valid, ts_a_valid)
-                prep_b = self._prepare_wave_data(eta_b_valid, ts_b_valid)
+                # 两遍分析（双雷达）
+                two_pass_cfg = self.config['analysis'].get('two_pass', {})
+                use_two_pass = (not is_meter and two_pass_cfg.get('enabled', False))
+                pass2_constraints = None
+                if use_two_pass:
+                    logging.info("=== Dual radar two-pass: Pass 1 ===")
+                    prep_a_p1 = self._prepare_wave_data(eta_a_valid, ts_a_valid, mode=mode)
+                    qzc = self._quick_zero_crossing(prep_a_p1['eta_original'], prep_a_p1['t_seconds'])
+                    h13_est, t13_est = qzc['H13'], qzc['T13']
+                    median_dist = np.median(prep_a_p1['raw_distances'])
+                    spike_ratio = prep_a_p1['n_spikes'] / len(eta_a_valid) if len(eta_a_valid) > 0 else 0
+                    min_h13 = two_pass_cfg.get('min_h13', 0.05)
+                    max_spike_ratio = two_pass_cfg.get('max_spike_ratio_pass1', 0.30)
+                    if h13_est > min_h13 and t13_est > 0 and spike_ratio < max_spike_ratio:
+                        pass2_constraints = {'H13': max(h13_est, min_h13), 'T13': t13_est, 'median_dist': median_dist}
+                        logging.info(f"Pass1: H1/3={h13_est*1000:.1f}mm, T1/3={t13_est:.2f}s → Pass 2")
+                    else:
+                        logging.info(f"Pass1 quality insufficient, using pass1 result")
+
+                prep_a = self._prepare_wave_data(eta_a_valid, ts_a_valid, mode=mode,
+                                                  pass2_constraints=pass2_constraints)
+                prep_b = self._prepare_wave_data(eta_b_valid, ts_b_valid, mode=mode,
+                                                  pass2_constraints=pass2_constraints)
 
                 eta_a_clean = prep_a['eta_resampled']
                 eta_b_clean = prep_b['eta_resampled']
@@ -453,12 +879,14 @@ class WaveAnalyzer:
                 params_a = self._analyze_single_radar(
                     prep_a['eta_resampled'], prep_a['raw_distances'],
                     fs=prep_a['fs'], t_seconds=prep_a['t_seconds'],
-                    eta_original=prep_a['eta_original']
+                    eta_original=prep_a['eta_original'],
+                    mode=mode
                 )
                 params_b = self._analyze_single_radar(
                     prep_b['eta_resampled'], prep_b['raw_distances'],
                     fs=prep_b['fs'], t_seconds=prep_b['t_seconds'],
-                    eta_original=prep_b['eta_original']
+                    eta_original=prep_b['eta_original'],
+                    mode=mode
                 )
 
                 # 双雷达模式：谱参数只用第一个有效雷达(params_a)
@@ -547,10 +975,54 @@ class WaveAnalyzer:
                     logging.warning(f"Insufficient valid data for triple radar: {len(eta1_valid)} samples")
                     return None
 
+                # ========== 两遍分析（work模式）==========
+                # 第一遍：宽松SWAP QC → 快速过零法 → 粗估H1/3, T1/3
+                # 第二遍：基于H1/3物理约束从原始数据重新滤波 → 完整分析
+                # meter模式已有严格先验，不需要两遍
+                two_pass_cfg = self.config['analysis'].get('two_pass', {})
+                use_two_pass = (not is_meter
+                                and two_pass_cfg.get('enabled', False))
+
+                pass2_constraints = None
+                if use_two_pass:
+                    # ── 第一遍：宽松QC，粗估波浪参数 ──
+                    logging.info("=== Two-pass analysis: Pass 1 (coarse estimation) ===")
+                    prep1_p1 = self._prepare_wave_data(eta1_valid, ts1_valid, mode=mode)
+
+                    # 快速过零法拿H1/3和T1/3
+                    qzc = self._quick_zero_crossing(
+                        prep1_p1['eta_original'], prep1_p1['t_seconds'])
+                    h13_est = qzc['H13']
+                    t13_est = qzc['T13']
+                    median_dist = np.median(prep1_p1['raw_distances'])
+                    spike_ratio = prep1_p1['n_spikes'] / len(eta1_valid) if len(eta1_valid) > 0 else 0
+
+                    min_h13 = two_pass_cfg.get('min_h13', 0.05)
+                    max_spike_ratio = two_pass_cfg.get('max_spike_ratio_pass1', 0.30)
+
+                    if h13_est > min_h13 and t13_est > 0 and spike_ratio < max_spike_ratio:
+                        h13_est = max(h13_est, min_h13)
+                        pass2_constraints = {
+                            'H13': h13_est,
+                            'T13': t13_est,
+                            'median_dist': median_dist
+                        }
+                        logging.info(f"Pass1 result: H1/3={h13_est*1000:.1f}mm, T1/3={t13_est:.2f}s, "
+                                     f"median_dist={median_dist:.3f}m, spike_ratio={spike_ratio:.1%}")
+                        logging.info("=== Two-pass analysis: Pass 2 (physics-constrained) ===")
+                    else:
+                        logging.info(f"Pass1 quality insufficient (H1/3={h13_est*1000:.1f}mm, "
+                                     f"T1/3={t13_est:.2f}s, spike_ratio={spike_ratio:.1%}), "
+                                     f"skipping pass2, using pass1 result")
+
                 # 数据准备（去尖刺→转η→重采样）
-                prep1 = self._prepare_wave_data(eta1_valid, ts1_valid)
-                prep2 = self._prepare_wave_data(eta2_valid, ts2_valid)
-                prep3 = self._prepare_wave_data(eta3_valid, ts3_valid)
+                # 第二遍从原始数据重新开始，不在第一遍结果上叠加
+                prep1 = self._prepare_wave_data(eta1_valid, ts1_valid, mode=mode,
+                                                 pass2_constraints=pass2_constraints)
+                prep2 = self._prepare_wave_data(eta2_valid, ts2_valid, mode=mode,
+                                                 pass2_constraints=pass2_constraints)
+                prep3 = self._prepare_wave_data(eta3_valid, ts3_valid, mode=mode,
+                                                 pass2_constraints=pass2_constraints)
 
                 eta1_clean = prep1['eta_resampled']
                 eta2_clean = prep2['eta_resampled']
@@ -569,25 +1041,105 @@ class WaveAnalyzer:
                 params1 = self._analyze_single_radar(
                     prep1['eta_resampled'], prep1['raw_distances'],
                     fs=prep1['fs'], t_seconds=prep1['t_seconds'],
-                    eta_original=prep1['eta_original']
+                    eta_original=prep1['eta_original'],
+                    mode=mode
                 )
                 params2 = self._analyze_single_radar(
                     prep2['eta_resampled'], prep2['raw_distances'],
                     fs=prep2['fs'], t_seconds=prep2['t_seconds'],
-                    eta_original=prep2['eta_original']
+                    eta_original=prep2['eta_original'],
+                    mode=mode
                 )
                 params3 = self._analyze_single_radar(
                     prep3['eta_resampled'], prep3['raw_distances'],
                     fs=prep3['fs'], t_seconds=prep3['t_seconds'],
-                    eta_original=prep3['eta_original']
+                    eta_original=prep3['eta_original'],
+                    mode=mode
                 )
 
-                # ========== DIWASP方向谱分析（三雷达模式）==========
+                # ========== 方向谱分析（三雷达模式, DFTM-CustomTRM）==========
                 directional_results = None
                 directional_spectrum_data = None
                 if self.directional_analyzer is not None:
                     try:
                         diwasp_method = self.config['analysis'].get('diwasp_method', 'IMLM')
+
+                        # meter模式：用原始数据副本做轻量预处理，保留相位信息
+                        # 只做基本去尖刺+R1参考滤波(宽松)，不做中值滤波和激进去刺
+                        # work模式：用已处理的数据（4σ/4δ去尖刺后）
+                        if is_meter and meter_cfg.get('enabled', False):
+                            from scipy.interpolate import interp1d as interp1d_dir
+                            # 从原始副本开始
+                            d1_dir = eta1_raw_for_dir.copy()
+                            d2_dir = eta2_raw_for_dir.copy()
+                            d3_dir = eta3_raw_for_dir.copy()
+                            # 宽松R1参考滤波（work模式阈值）
+                            r1_dir_thresh = self.config['analysis'].get('r1_ref_threshold', 0.15)
+                            sp2_dir = ~np.isnan(d1_dir) & ~np.isnan(d2_dir) & (np.abs(d2_dir - d1_dir) > r1_dir_thresh)
+                            sp3_dir = ~np.isnan(d1_dir) & ~np.isnan(d3_dir) & (np.abs(d3_dir - d1_dir) > r1_dir_thresh)
+                            if np.any(sp2_dir): d2_dir[sp2_dir] = d1_dir[sp2_dir]
+                            if np.any(sp3_dir): d3_dir[sp3_dir] = d1_dir[sp3_dir]
+                            # 基本去尖刺（绝对范围 + 4σ）
+                            for d_arr in [d1_dir, d2_dir, d3_dir]:
+                                valid = ~np.isnan(d_arr)
+                                if np.sum(valid) < 10:
+                                    continue
+                                med = np.median(d_arr[valid])
+                                bad = valid & ((d_arr < 0.3) | (d_arr > med + 3.0))
+                                if np.any(bad): d_arr[bad] = med
+                                mu_d = np.mean(d_arr[~np.isnan(d_arr)])
+                                sig_d = np.std(d_arr[~np.isnan(d_arr)])
+                                if sig_d > 1e-6:
+                                    outlier = np.abs(d_arr - mu_d) > 4.0 * sig_d
+                                    if np.any(outlier):
+                                        good_d = ~outlier & ~np.isnan(d_arr)
+                                        if np.any(good_d):
+                                            d_arr[outlier] = np.interp(
+                                                np.where(outlier)[0],
+                                                np.where(good_d)[0],
+                                                d_arr[good_d])
+                            # η + 重采样
+                            valid_dir = ~(np.isnan(d1_dir) | np.isnan(d2_dir) | np.isnan(d3_dir))
+                            d1_v = d1_dir[valid_dir]
+                            d2_v = d2_dir[valid_dir]
+                            d3_v = d3_dir[valid_dir]
+                            ts_v = [timestamps[i] for i in range(len(timestamps)) if valid_dir[i]]
+                            t_ep = np.array([self._parse_timestamps_to_epoch([t])[0] for t in ts_v])
+                            t_r = t_ep - t_ep[0]
+                            dur = t_r[-1]
+                            t_uni = np.arange(0, dur, 1.0 / 6.0)
+                            def _to_eta_dir(d):
+                                return -(d - np.median(d))
+                            e1d = interp1d_dir(t_r, _to_eta_dir(d1_v), fill_value='extrapolate')(t_uni)
+                            e2d = interp1d_dir(t_r, _to_eta_dir(d2_v), fill_value='extrapolate')(t_uni)
+                            e3d = interp1d_dir(t_r, _to_eta_dir(d3_v), fill_value='extrapolate')(t_uni)
+                            ml_dir = min(len(e1d), len(e2d), len(e3d))
+                            e1d, e2d, e3d = e1d[:ml_dir], e2d[:ml_dir], e3d[:ml_dir]
+                            # 带通滤波
+                            band = self.config['analysis'].get('filter_band', [0.04, 1.0])
+                            f_low = max(band[0], 0.01)
+                            b_filt, a_filt = butter(4, band, btype='band', fs=self.sample_rate)
+                            padlen_dir = min(3 * int(self.sample_rate / f_low), ml_dir - 1)
+                            eta1_for_dir = filtfilt(b_filt, a_filt, detrend(e1d), padlen=padlen_dir)
+                            eta2_for_dir = filtfilt(b_filt, a_filt, detrend(e2d), padlen=padlen_dir)
+                            eta3_for_dir = filtfilt(b_filt, a_filt, detrend(e3d), padlen=padlen_dir)
+                            logging.info(f"Meter direction: using lightweight preprocessing "
+                                         f"(R1-ref={r1_dir_thresh}m, 4σ, no medfilt)")
+                        else:
+                            # work模式：用已处理的数据
+                            band = self.config['analysis'].get('filter_band', [0.04, 1.0])
+                            if self.config['analysis'].get('filter_enable', True):
+                                f_low = max(band[0], 0.01)
+                                b_filt, a_filt = butter(4, band, btype='band', fs=self.sample_rate)
+                                padlen = min(3 * int(self.sample_rate / f_low), min_len - 1)
+                                eta1_for_dir = filtfilt(b_filt, a_filt, detrend(eta1_clean), padlen=padlen)
+                                eta2_for_dir = filtfilt(b_filt, a_filt, detrend(eta2_clean), padlen=padlen)
+                                eta3_for_dir = filtfilt(b_filt, a_filt, detrend(eta3_clean), padlen=padlen)
+                            else:
+                                eta1_for_dir = eta1_clean
+                                eta2_for_dir = eta2_clean
+                                eta3_for_dir = eta3_clean
+                            logging.info(f"Bandpass filter applied to direction input: {band}Hz")
 
                         # R1平均测距：用原始数据（去趋势前）的简单平均
                         # 作为当前水面距离，动态重算倾斜雷达的等效基线
@@ -596,11 +1148,12 @@ class WaveAnalyzer:
                         logging.info(f"Running DIWASP directional analysis (triple radar mode, method={diwasp_method}, R1_mean={r1_mean_dist:.3f}m)")
 
                         dir_results = self.directional_analyzer.analyze(
-                            eta1_clean,
-                            eta2=eta2_clean,
-                            eta3=eta3_clean,
+                            eta1_for_dir,
+                            eta2=eta2_for_dir,
+                            eta3=eta3_for_dir,
                             method=diwasp_method,
-                            r1_mean_distance=r1_mean_dist
+                            r1_mean_distance=r1_mean_dist,
+                            mode=mode
                         )
 
                         if dir_results.get('success', False):
@@ -626,10 +1179,9 @@ class WaveAnalyzer:
                     except Exception as e:
                         logging.error(f"DIWASP analysis failed: {e}")
 
-                # 三雷达模式：谱参数用雷达1，方向用DIWASP
-                # DIWASP输出已在directional_spectrum.py中完成转换：
+                # 三雷达模式：谱参数用雷达1，方向用DFTM-CustomTRM
+                # 输出已在directional_spectrum.py中完成转换：
                 #   axis-angle（传播去向）→ 罗盘来向（真北）
-                # 此处直接使用，无需额外校正
                 wave_direction = directional_results.get('Dp') if directional_results else None
 
                 results = {
@@ -805,7 +1357,7 @@ class WaveAnalyzer:
             return data_detrend
 
     def _zero_crossing_analysis(self, data: np.ndarray, raw_data: np.ndarray = None,
-                                  t_seconds: np.ndarray = None) -> Dict:
+                                  t_seconds: np.ndarray = None, mode: str = 'work') -> Dict:
         """零交叉法分析 - 计算完整波浪统计参数
 
         参数:
@@ -864,6 +1416,57 @@ class WaveAnalyzer:
         wave_heights = np.array(wave_heights)
         wave_periods = np.array(wave_periods)
 
+        # 异常波剔除：
+        # 1) 伪波：周期过短的零交叉碎片
+        # 2) 异常大波：波高超过中位数倍数的尖刺残留
+        # 3) 窗口首尾不完整波：波高低于中位数比例的截断波
+        # 计量模式使用更严格的阈值
+        is_meter = (mode == 'meter')
+        meter_cfg = self.config['analysis'].get('meter_filter', {})
+        if is_meter and meter_cfg.get('enabled', False):
+            zc_min_T_ratio = meter_cfg.get('zc_min_period_ratio', 0.5)
+            zc_max_H_ratio = meter_cfg.get('zc_max_height_ratio', 1.5)
+            zc_min_H_ratio = meter_cfg.get('zc_min_height_ratio', 0.5)
+        else:
+            zc_min_T_ratio = 0.33
+            zc_max_H_ratio = 2.0
+            zc_min_H_ratio = 0.33
+        median_H = np.median(wave_heights)
+        median_T = np.median(wave_periods)
+        valid = (
+            (wave_periods >= median_T * zc_min_T_ratio) &   # 去掉伪波
+            (wave_heights <= median_H * zc_max_H_ratio) &   # 去掉异常大波
+            (wave_heights >= median_H * zc_min_H_ratio)     # 去掉截断碎波
+        )
+        n_rejected = int(np.sum(~valid))
+        if n_rejected > 0:
+            logging.info(f"Zero-crossing QC: rejected {n_rejected}/{len(wave_heights)} waves "
+                         f"(median_H={median_H*1000:.1f}mm, median_T={median_T:.2f}s)")
+        wave_heights = wave_heights[valid]
+        wave_periods = wave_periods[valid]
+
+        # 计量模式：波高截断(Winsorize)
+        # 噪声在波峰叠加固定幅度(~10mm)，对小波影响大、大波影响小
+        # clip到median×ratio，效果自动随波高缩放：
+        #   0.2m波: clip=220mm, 压制噪声放大的峰
+        #   0.3m波: clip=330mm, 正常波高(±10mm)不触发
+        if is_meter and meter_cfg.get('enabled', False):
+            clip_ratio = meter_cfg.get('zc_clip_height_ratio', 1.1)
+            if clip_ratio > 0:
+                clip_val = median_H * clip_ratio
+                n_clipped = int(np.sum(wave_heights > clip_val))
+                if n_clipped > 0:
+                    wave_heights = np.minimum(wave_heights, clip_val)
+                    logging.info(f"Zero-crossing clip: {n_clipped} waves clipped to "
+                                 f"{clip_val*1000:.1f}mm (median={median_H*1000:.1f}mm × {clip_ratio})")
+
+        if len(wave_heights) == 0:
+            return {
+                'Hmax': 0, 'H1_10': 0, 'Hs': 0, 'Hmean': 0,
+                'Tmax': 0, 'T1_10': 0, 'Ts': 0, 'Tmean': 0,
+                'wave_count': 0, 'mean_level': 0, 'mean_distance': 0
+            }
+
         # 按波高降序排序
         sorted_indices = np.argsort(wave_heights)[::-1]
         sorted_heights = wave_heights[sorted_indices]
@@ -901,10 +1504,11 @@ class WaveAnalyzer:
         else:
             mean_distance = 0
 
-        # 计算潮位（阵列高度 - 平均测距）
-        # array_height 从配置文件读取，表示雷达阵列相对基准面的高度
-        array_height = self.config['radar'].get('array_height', 5.0)
-        tide_level = array_height - mean_distance
+        # 计算潮位（85高程 - 平均测距）
+        # elevation_85_surveyed=false时潮位为估计值，=true时为精确值
+        elevation_85 = self.config['radar'].get('elevation_85',
+                       self.config['radar'].get('array_height', 5.0))
+        tide_level = elevation_85 - mean_distance
 
         return {
             'Hmax': Hmax,
@@ -922,7 +1526,8 @@ class WaveAnalyzer:
 
     def _analyze_single_radar(self, data: np.ndarray, raw_data: np.ndarray = None,
                                fs: float = None, t_seconds: np.ndarray = None,
-                               eta_original: np.ndarray = None) -> Dict:
+                               eta_original: np.ndarray = None,
+                               mode: str = 'work') -> Dict:
         """分析单个雷达数据 - 完整谱参数版本
 
         Args:
@@ -986,11 +1591,19 @@ class WaveAnalyzer:
             epsilon_0 = 0
 
         # 零交叉法分析（用原始时间戳η，但需去趋势+滤波）
+        # 计量模式使用专用滤波频段
+        is_meter = (mode == 'meter')
+        meter_cfg = self.config['analysis'].get('meter_filter', {})
+        if is_meter and meter_cfg.get('enabled', False):
+            band = meter_cfg.get('filter_band', [0.05, 1.5])
+            logging.info(f"Meter mode filter: using filter_band={band}Hz")
+        else:
+            band = self.config['analysis']['filter_band']
+
         if eta_original is not None and t_seconds is not None:
             # 对原始时间轴η做去趋势+带通滤波，保留非等间隔时间戳
             zc_eta = detrend(eta_original)
             if self.config['analysis']['filter_enable']:
-                band = self.config['analysis']['filter_band']
                 f_low = band[0] if band[0] > 0 else 0.01
                 # 使用原始实际采样率（非重采样后的）
                 zc_fs = (len(eta_original) - 1) / (t_seconds[-1] - t_seconds[0]) if t_seconds[-1] > t_seconds[0] else fs
@@ -999,7 +1612,8 @@ class WaveAnalyzer:
                 zc_eta = filtfilt(b, a, zc_eta, padlen=padlen)
         else:
             zc_eta = data
-        zc_results = self._zero_crossing_analysis(zc_eta, raw_data, t_seconds=t_seconds)
+
+        zc_results = self._zero_crossing_analysis(zc_eta, raw_data, t_seconds=t_seconds, mode=mode)
 
         # distance range 作为 Hs（校准用，去尖刺后 max-min）
         if raw_data is not None and len(raw_data) > 0:
@@ -1221,6 +1835,23 @@ class MQTTAnalysisService:
                 # 更新完整的config字典（nperseg等参数通过config字典传递，无需单独存储）
                 self.config['analysis'].update(analysis_cfg)
 
+            # 更新雷达相关配置（array_heading等）
+            if 'radar' in new_config:
+                radar_cfg = new_config['radar']
+                old_radar = self.config.get('radar', {}).copy()  # 必须copy，否则update会同时修改old_radar
+                self.config['radar'].update(radar_cfg)
+
+                # 如果 array_heading 变化，重新初始化方向谱分析器
+                old_heading = old_radar.get('array_heading')
+                new_heading = radar_cfg.get('array_heading')
+                if new_heading is not None and old_heading != new_heading:
+                    logging.info(f"[Hot-Reload] array_heading: {old_heading} -> {new_heading}")
+                    if hasattr(self, 'analyzer') and self.analyzer.directional_analyzer is not None:
+                        self.analyzer.directional_analyzer.array_heading = new_heading
+                        self.analyzer.directional_analyzer.xaxisdir = (new_heading + 90) % 360
+                        logging.info(f"[Hot-Reload] DirectionalSpectrumAnalyzer updated: "
+                                   f"array_heading={new_heading}, xaxisdir={(new_heading + 90) % 360}")
+
             logging.info("[Hot-Reload] Configuration updated successfully")
 
         except Exception as e:
@@ -1324,18 +1955,31 @@ class MQTTAnalysisService:
                     self.data_buffer['eta3'].popleft()
 
     def _get_analysis_window(self, window_duration: float = None) -> Optional[Dict]:
-        """获取分析窗口数据（基于实际时间戳判断窗口时长，带采样质量检查）
+        """获取分析窗口数据（优先用内存缓冲区，不足时回退到数据库）
 
         Args:
             window_duration: 窗口时长(秒)，None时使用配置值
         """
         win_dur = window_duration if window_duration is not None else self.window_duration
+
+        data = self._get_window_from_buffer(win_dur)
+        if data is not None:
+            return data
+
+        # 内存缓冲区数据不足，尝试从数据库获取
+        logging.info(f"Buffer insufficient for {win_dur}s window, falling back to database")
+        data = self._get_window_from_database(win_dur)
+        if data is not None:
+            logging.info(f"Got {len(data['timestamps'])} samples from database")
+        return data
+
+    def _get_window_from_buffer(self, win_dur: float) -> Optional[Dict]:
+        """从内存缓冲区获取分析窗口"""
         with self.buffer_lock:
             buf_len = len(self.data_buffer['timestamps'])
             if buf_len < self.config['analysis']['min_samples']:
                 return None
 
-            # 用首尾时间戳计算缓冲区实际时长
             try:
                 t_first = datetime.fromisoformat(
                     self.data_buffer['timestamps'][0].replace('Z', '+00:00')).timestamp()
@@ -1346,10 +1990,8 @@ class MQTTAnalysisService:
                 buf_duration = buf_len / self.config['collection']['sample_rate']
 
             if buf_duration < win_dur:
-                logging.warning(f"Insufficient data: have {buf_duration:.0f}s, need {win_dur:.0f}s")
                 return None
 
-            # 从尾部向前找到刚好覆盖 win_dur 的起始位置
             target_start = t_last - win_dur
             ts_list = list(self.data_buffer['timestamps'])
             start_idx = 0
@@ -1372,33 +2014,153 @@ class MQTTAnalysisService:
                 'eta3': list(self.data_buffer['eta3'])[start_idx:]
             }
 
-            # 采样质量检查：检测异常采样间隔
-            try:
-                timestamps_arr = np.array([datetime.fromisoformat(ts.replace('Z', '+00:00')).timestamp()
-                                          for ts in data['timestamps']])
-                intervals = np.diff(timestamps_arr)
-                expected_interval = 1.0 / self.config['collection']['sample_rate']
+        return self._check_sampling_quality(data)
 
-                # 统计异常间隔（超过预期的3倍，约0.5秒）
-                abnormal_mask = intervals > expected_interval * 3
-                abnormal_count = np.sum(abnormal_mask)
-                abnormal_ratio = abnormal_count / len(intervals) if len(intervals) > 0 else 0
+    def _get_window_from_database(self, win_dur: float) -> Optional[Dict]:
+        """从数据库获取分析窗口数据"""
+        db_config = self.config.get('database', {})
+        if not db_config:
+            logging.warning("No database config, cannot fall back to DB")
+            return None
 
-                # 如果异常间隔比例超过阈值，跳过本次分析
-                max_abnormal_ratio = self.config['analysis'].get('max_abnormal_sampling_ratio', 0.05)
-                if abnormal_ratio > max_abnormal_ratio:
-                    logging.warning(f"Poor sampling quality: {abnormal_ratio*100:.1f}% abnormal intervals "
-                                  f"(threshold: {max_abnormal_ratio*100:.1f}%), skipping analysis")
-                    return None
+        conn = None
+        try:
+            conn = psycopg2.connect(
+                host=db_config.get('host', 'localhost'),
+                port=db_config.get('port', 5432),
+                database=db_config.get('database', 'wave_monitoring'),
+                user=db_config.get('user', 'wave_user'),
+                password=db_config.get('password', ''),
+            )
+            cursor = conn.cursor()
 
-                if abnormal_count > 0:
-                    max_interval = np.max(intervals)
-                    logging.info(f"Sampling quality: {abnormal_count} abnormal intervals ({abnormal_ratio*100:.1f}%), "
-                               f"max interval: {max_interval:.3f}s")
-            except Exception as e:
-                logging.warning(f"Sampling quality check failed: {e}, proceeding with analysis")
+            # 查询最近 win_dur 秒内的三个雷达数据，按时间排序
+            cursor.execute("""
+                SELECT timestamp, radar_id, distance
+                FROM wave_measurements
+                WHERE timestamp > NOW() - INTERVAL '%s seconds'
+                ORDER BY timestamp ASC
+            """, (int(win_dur + 60),))  # 多取60秒余量
+
+            rows = cursor.fetchall()
+            cursor.close()
+
+            if not rows:
+                logging.warning("No data in database for the requested window")
+                return None
+
+            # 按时间戳分组，每个时间点应有 radar_id=1,2,3
+            from collections import defaultdict
+            time_groups = defaultdict(lambda: {1: np.nan, 2: np.nan, 3: np.nan})
+            for ts, radar_id, distance in rows:
+                if 1 <= radar_id <= 3:
+                    time_groups[ts][radar_id] = distance if distance is not None else np.nan
+
+            # 按时间排序
+            sorted_times = sorted(time_groups.keys())
+            if not sorted_times:
+                return None
+
+            # 从尾部截取 win_dur 窗口
+            t_last = sorted_times[-1].timestamp()
+            target_start = t_last - win_dur
+            start_idx = 0
+            for i, ts in enumerate(sorted_times):
+                if ts.timestamp() >= target_start:
+                    start_idx = i
+                    break
+
+            selected_times = sorted_times[start_idx:]
+            actual_duration = selected_times[-1].timestamp() - selected_times[0].timestamp()
+
+            if actual_duration < win_dur * 0.8:  # 至少需要80%的窗口数据
+                logging.warning(f"Database data too short: {actual_duration:.0f}s < {win_dur*0.8:.0f}s")
+                return None
+
+            timestamps = []
+            eta1 = []
+            eta2 = []
+            eta3 = []
+            for ts in selected_times:
+                ts_iso = ts.isoformat()
+                timestamps.append(ts_iso)
+                grp = time_groups[ts]
+                eta1.append(grp[1])
+                eta2.append(grp[2])
+                eta3.append(grp[3])
+
+            data = {
+                'timestamps': timestamps,
+                'timestamps_r2': timestamps.copy(),
+                'timestamps_r3': timestamps.copy(),
+                'eta1': eta1,
+                'eta2': eta2,
+                'eta3': eta3,
+            }
+
+            min_samples = self.config['analysis'].get('min_samples', 100)
+            if len(timestamps) < min_samples:
+                logging.warning(f"Database returned only {len(timestamps)} samples, need {min_samples}")
+                return None
+
+            return self._check_sampling_quality(data)
+
+        except Exception as e:
+            logging.error(f"Database fallback failed: {e}")
+            return None
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    def _check_sampling_quality(self, data: Dict) -> Optional[Dict]:
+        """采样质量检查：检测异常采样间隔"""
+        try:
+            timestamps_arr = np.array([datetime.fromisoformat(ts.replace('Z', '+00:00')).timestamp()
+                                      for ts in data['timestamps']])
+            intervals = np.diff(timestamps_arr)
+            expected_interval = 1.0 / self.config['collection']['sample_rate']
+
+            abnormal_mask = intervals > expected_interval * 3
+            abnormal_count = np.sum(abnormal_mask)
+            abnormal_ratio = abnormal_count / len(intervals) if len(intervals) > 0 else 0
+
+            max_abnormal_ratio = self.config['analysis'].get('max_abnormal_sampling_ratio', 0.05)
+            if abnormal_ratio > max_abnormal_ratio:
+                logging.warning(f"Poor sampling quality: {abnormal_ratio*100:.1f}% abnormal intervals "
+                              f"(threshold: {max_abnormal_ratio*100:.1f}%), skipping analysis")
+                return None
+
+            if abnormal_count > 0:
+                max_interval = np.max(intervals)
+                logging.info(f"Sampling quality: {abnormal_count} abnormal intervals ({abnormal_ratio*100:.1f}%), "
+                           f"max interval: {max_interval:.3f}s")
+        except Exception as e:
+            logging.warning(f"Sampling quality check failed: {e}, proceeding with analysis")
 
         return data
+
+    def _publish_error_result(self, mode: str, window_duration: int, reason: str):
+        """数据不足或分析失败时发布空结果，让serial_console快速收到响应而非超时等待"""
+        if not self.mqtt_connected.is_set():
+            return
+        try:
+            error_result = {
+                'metadata': {
+                    'end_time': datetime.now(tz=timezone.utc).isoformat(),
+                    'mode': mode,
+                    'window_duration': window_duration,
+                    'error': reason,
+                },
+                'results': {}
+            }
+            topic = self.config['mqtt']['topics']['analyzed_data']
+            self.mqtt_client.publish(topic, json.dumps(error_result), qos=1)
+            logging.info(f"[OnDemand] Published error result: {reason}")
+        except Exception as e:
+            logging.error(f"Failed to publish error result: {e}")
 
     def _publish_analysis(self, analysis: Dict):
         """发布分析结果"""
@@ -1540,7 +2302,7 @@ class MQTTAnalysisService:
                     self.last_on_demand_window = win_dur
                     self.last_on_demand_mode = mode
                     if data_window:
-                        analysis = self.analyzer.analyze_window(data_window)
+                        analysis = self.analyzer.analyze_window(data_window, mode=mode)
                         if analysis:
                             analysis['metadata']['end_time'] = datetime.now(tz=timezone.utc).isoformat()
                             analysis['metadata']['mode'] = mode
@@ -1551,9 +2313,15 @@ class MQTTAnalysisService:
                             self._analysis_idle = True
                             logging.info(f"[OnDemand] {mode} analysis complete")
                             self._publish_status()
+                        else:
+                            self._analysis_idle = True
+                            logging.warning(f"[OnDemand] analyze_window returned None")
+                            self._publish_error_result(mode, win_dur, "分析计算失败")
+                            self._publish_status()
                     else:
                         self._analysis_idle = True
                         logging.warning(f"[OnDemand] Insufficient data for {win_dur}s window")
+                        self._publish_error_result(mode, win_dur, "数据不足")
                         self._publish_status()
 
                 # 自动定时分析（仅 auto_analysis=True 时生效）

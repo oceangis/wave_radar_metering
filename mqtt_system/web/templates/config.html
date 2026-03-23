@@ -84,15 +84,22 @@
                     <span class="form-help">局部y轴相对正北的顺时针角度，用于将相对波向转换为地理波向</span>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">阵列高度 (m)</label>
+                    <label class="form-label">85高程 (m)</label>
                     <div style="display: flex; gap: 10px; align-items: center;">
-                        <input type="number" id="arrayHeight" class="form-control"
-                               step="0.01" min="0" max="100" style="flex: 1;">
+                        <input type="number" id="elevation85" class="form-control"
+                               step="0.001" min="0" max="200" style="flex: 1;">
                         <span style="font-size: 12px; color: #666;">
-                            当前: <span id="currentArrayHeight">--</span>m
+                            当前: <span id="currentElevation85">--</span>m
                         </span>
                     </div>
-                    <span class="form-help">雷达阵列相对基准面的高度，用于计算潮位（潮位 = 高度 - 测距）</span>
+                    <div style="margin-top: 6px;">
+                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 13px;">
+                            <input type="checkbox" id="elevation85Surveyed">
+                            <span>已水准测量（勾选后潮位数据标记为精确值）</span>
+                        </label>
+                        <span id="surveyStatus" style="font-size: 12px; margin-left: 22px;"></span>
+                    </div>
+                    <span class="form-help">安装时填估计值即可（QC约束用，误差几米无影响）。水准测量后更新精确值并勾选</span>
                 </div>
                 <div style="text-align: right; margin-top: 15px;">
                     <button class="btn btn-primary" onclick="updateArrayConfig()">💾 保存阵列配置</button>
@@ -694,19 +701,22 @@
                 const data = await response.json();
 
                 const arrayHeading = data.radar?.array_heading ?? 0;
-                const arrayHeight = data.radar?.array_height ?? 5;
+                const elevation85 = data.radar?.elevation_85 ?? data.radar?.array_height ?? 5;
+                const surveyed = data.radar?.elevation_85_surveyed ?? false;
 
                 // 更新显示
                 const currentHeading = document.getElementById('currentArrayHeading');
-                const currentHeight = document.getElementById('currentArrayHeight');
                 if (currentHeading) currentHeading.textContent = arrayHeading.toFixed(1);
-                if (currentHeight) currentHeight.textContent = arrayHeight.toFixed(2);
+                document.getElementById('currentElevation85').textContent = elevation85.toFixed(3);
 
                 // 更新输入框
                 const headingInput = document.getElementById('arrayHeading');
-                const heightInput = document.getElementById('arrayHeight');
                 if (headingInput) headingInput.value = arrayHeading.toFixed(1);
-                if (heightInput) heightInput.value = arrayHeight.toFixed(2);
+                document.getElementById('elevation85').value = elevation85.toFixed(3);
+                document.getElementById('elevation85Surveyed').checked = surveyed;
+                document.getElementById('surveyStatus').textContent = surveyed
+                    ? '✅ 已测量，潮位数据精确' : '⚠️ 估计值，潮位仅供参考';
+                document.getElementById('surveyStatus').style.color = surveyed ? '#28a745' : '#e67e22';
             } catch (error) {
                 console.error('加载阵列配置失败:', error);
             }
@@ -714,15 +724,16 @@
 
         async function updateArrayConfig() {
             const heading = parseFloat(document.getElementById('arrayHeading').value);
-            const height = parseFloat(document.getElementById('arrayHeight').value);
+            const elevation85 = parseFloat(document.getElementById('elevation85').value);
+            const surveyed = document.getElementById('elevation85Surveyed').checked;
 
             // 验证输入
             if (isNaN(heading) || heading < 0 || heading > 360) {
                 showArrayConfigStatus('❌ 阵列朝向角必须在0-360度之间', 'error');
                 return;
             }
-            if (isNaN(height) || height < 0 || height > 100) {
-                showArrayConfigStatus('❌ 阵列高度必须在0-100米之间', 'error');
+            if (isNaN(elevation85) || elevation85 < 0 || elevation85 > 200) {
+                showArrayConfigStatus('❌ 85高程必须在0-200米之间', 'error');
                 return;
             }
 
@@ -730,7 +741,8 @@
                 const payload = {
                     analysis: {
                         array_heading: heading,
-                        array_height: height
+                        elevation_85: elevation85,
+                        elevation_85_surveyed: surveyed
                     }
                 };
 
@@ -746,7 +758,10 @@
                     showArrayConfigStatus('✅ 配置已更新！重启analyzer服务后生效', 'success');
                     // 更新当前显示
                     document.getElementById('currentArrayHeading').textContent = heading.toFixed(1);
-                    document.getElementById('currentArrayHeight').textContent = height.toFixed(2);
+                    document.getElementById('currentElevation85').textContent = elevation85.toFixed(3);
+                    document.getElementById('surveyStatus').textContent = surveyed
+                        ? '✅ 已测量，潮位数据精确' : '⚠️ 估计值，潮位仅供参考';
+                    document.getElementById('surveyStatus').style.color = surveyed ? '#28a745' : '#e67e22';
 
                     // 3秒后自动加载最新配置
                     setTimeout(loadArrayConfig, 3000);

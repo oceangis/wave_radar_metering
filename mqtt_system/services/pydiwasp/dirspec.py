@@ -131,7 +131,7 @@ def dirspec(ID, SM, EP, Options_=None):
 
     #calculate transfer parameters
     print('transfer parameters\n')
-    trm = np.empty((szd, nf, len(pidirs)))
+    trm = np.empty((szd, nf, len(pidirs)), dtype='complex128')
     kx = np.empty((szd, szd, nf, len(pidirs)))
     for m in range(szd):
         sensor_fn = _SENSOR_TYPES[ID['datatypes'][m]]

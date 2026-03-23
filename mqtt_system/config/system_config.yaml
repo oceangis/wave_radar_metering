@@ -1,15 +1,42 @@
 analysis:
-  analysis_interval: 60
+  analysis_interval: 300
   assumed_wave_direction: 0.0
   auto_analysis: false
   direction_resolution: 360
-  diwasp_method: IMLM
+  diwasp_method: DFTM
   filter_band:
   - 0.04
   - 1
   filter_enable: true
   gravity: 9.81
   max_abnormal_sampling_ratio: 0.05
+  meter_filter:
+    enabled: true
+    filter_band: [0.04, 1.0]
+    # ---- 距离域去尖刺（针对Hs=0.1~0.3m计量波浪优化） ----
+    jump_threshold: 0.15          # 150mm跳变阈值 (0.3m波max Δd≈105mm，留余量)
+    iqr_multiplier: 1.5           # IQR倍数 (work: 3.0) [已弃用，保留兼容]
+    sigma_multiplier: 2.5         # SWAP 4σ测试乘数 (work: 4.0, meter更紧≈IQR×1.5)
+    delta_multiplier: 2.5         # SWAP 4δ测试乘数 (work: 4.0)
+    abs_margin: 0.3               # 绝对范围余量 → 有效上限=array_height+0.3
+    max_rate_of_change: 1.0       # m/s 变化率上限
+    # ---- MAD+局部窗口二次去刺 ----
+    mad_threshold: 3.0            # MAD Z-score阈值（补充IQR盲区）
+    local_window: 31              # 局部滑窗大小(奇数, 6Hz下≈5s)
+    local_threshold: 3.5          # 局部Z-score阈值
+    despike_iterations: 2         # 迭代去刺轮数
+    # ---- η域残余尖刺 ----
+    eta_medfilt_window: 3         # η中值滤波窗口(缩小，保护0.1m小波形状)
+    # ---- R1参考+中值滤波 ----
+    r1_ref_threshold: 0.20        # 200mm (0.3m波自然|η2-η1|可达166mm)
+    r23_medfilt_window: 5         # R2/R3中值滤波(6Hz下0.83s，不超T/2)
+    r1_medfilt_window: 3          # R1中值滤波(6Hz下0.5s，最小损失)
+    # ---- 过零法QC ----
+    zc_min_period_ratio: 0.5      # 最小周期/中位数比 (work: 0.33)
+    zc_max_height_ratio: 2.0      # 最大波高/中位数比（极端异常才剔除）
+    zc_min_height_ratio: 0.5      # 最小波高/中位数比 (work: 0.33)
+    zc_clip_height_ratio: 1.1     # 波高截断比：H>median*1.1的波clip到此值
+  r1_ref_threshold: 0.15
   meter_window: 300
   min_samples: 100
   nperseg: 600
@@ -20,6 +47,26 @@ analysis:
     valid_range:
     - 0.0
     - 200.0
+  # ---- 两遍分析（iterative refinement）----
+  two_pass:
+    enabled: true                     # work模式启用两遍分析
+    # 第二遍物理约束参数（基于第一遍粗估H1/3、T1/3）
+    abs_range_multiplier: 3.0         # 绝对范围 = median ± multiplier × H1/3
+    jump_use_steepness: true          # 跳变阈值用波陡极限 π·H/T
+    jump_steepness_factor: 1.5        # 波陡安全系数（>1留余量）
+    r1_ref_multiplier: 1.0            # R1参考阈值 = multiplier × H1/3
+    sigma_multiplier: 3.0             # 第二遍σ乘数（比第一遍4.0更紧）
+    delta_multiplier: 3.0             # 第二遍δ乘数（比第一遍4.0更紧）
+    min_h13: 0.05                     # H1/3下限保护(m)，防止极平静时约束过紧
+    max_spike_ratio_pass1: 0.30       # 第一遍异常比例超过此值则不收紧，退回保守
+  # ---- 先验知识（部署区域：渤海中海油平台）----
+  prior_knowledge:
+    enabled: true
+    max_wave_height: 6.0              # 渤海百年一遇Hs≈6m，极端上限
+    tidal_range: 4.0                  # 渤海潮差1-4m，取上限
+    min_wave_period: 1.5              # 渤海短风浪下限
+    max_wave_period: 12.0             # 渤海长周期涌浪上限
+    water_depth: 20.0                 # 平台区域典型水深(m)
   tide_window_duration: 300
   warmup_duration: 60
   window_duration: 300
@@ -78,8 +125,9 @@ mqtt:
     system_status: system/status
   username: wave_user
 radar:
-  array_heading: 180.0
-  array_height: 10.0
+  array_heading: 66.0
+  elevation_85: 20.0               # 85国家高程(m)，安装时填估计值，水准测量后更新精确值
+  elevation_85_surveyed: false     # 是否已水准测量：false=估计值(潮位供参考) true=精确值(潮位可用)
   baudrate: 9600
   diwasp_positions:
     R1:
@@ -87,12 +135,12 @@ radar:
     - 0.0
     - 0.0
     R2:
-    - -0.1833
-    - 0.3175
+    - -0.1828
+    - 0.3160
     - 0.0
     R3:
-    - 0.1833
-    - 0.3175
+    - 0.1828
+    - 0.3160
     - 0.0
   modbus_address: 246
   ports:

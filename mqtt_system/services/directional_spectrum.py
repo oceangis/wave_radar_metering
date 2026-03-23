@@ -27,6 +27,7 @@ Date: 2025-11-23
 """
 
 import numpy as np
+import os
 import logging
 from typing import Dict, Optional, Tuple
 from scipy.signal import welch, detrend
@@ -56,9 +57,6 @@ class DirectionalSpectrumAnalyzer:
         'R2': 10.0,   # tilted forward / 向前倾斜
         'R3': 10.0    # tilted forward / 向前倾斜
     }
-
-    # 180°模糊消除：记录上一次有效波向
-    _last_Dp = None
 
     def __init__(self, config: Dict):
         """
@@ -114,6 +112,10 @@ class DirectionalSpectrumAnalyzer:
         self.tilt_factors = {
             k: np.cos(np.radians(v)) for k, v in self.tilt_angles_per_radar.items()
         }
+
+        # 180°模糊消除：记录上一次有效波向（实例变量，带时间戳）
+        self._last_Dp = None
+        self._last_Dp_time = 0.0  # epoch seconds
 
         # Setup radar positions (计算等效测量点) / 设置雷达位置
         self._setup_radar_positions()
@@ -355,37 +357,38 @@ class DirectionalSpectrumAnalyzer:
         return eta2, eta3
 
     def compute_directional_spectrum(self, eta1: np.ndarray, eta2: np.ndarray,
-                                    eta3: np.ndarray, method: str = 'EMEP') -> Dict:
+                                    eta3: np.ndarray, method: str = 'EMEP',
+                                    mode: str = 'work') -> Dict:
         """
-        Compute directional wave spectrum using pyDIWASP.
-        使用pyDIWASP计算方向波浪谱。
+        Compute directional wave spectrum using DFTM with custom transfer functions.
+        使用自定义传递函数的DFTM计算方向波浪谱。
+
+        倾斜雷达的实际测量值包含高程和斜率的混合信号：
+          η_measured = η(x_eff) + H·tan(α)·∂η/∂s_tilt
+        自定义传递函数 trm = 1 + H·tan(α)·j·k·sin(θ+φ) 利用这一特性
+        为DFTM波束形成器增加方向先验权重，显著提升方向估计精度。
 
         Parameters / 参数:
             eta1: Surface elevation from R1 / R1的水面高程
             eta2: Surface elevation from R2 / R2的水面高程
             eta3: Surface elevation from R3 / R3的水面高程
-            method: Estimation method ('EMEP', 'IMLM', 'BDM', 'DFTM')
-                   估计方法
+            method: Estimation method ('DFTM' recommended, also supports 'EMEP', 'IMLM')
+                   估计方法（推荐DFTM）
 
         Returns / 返回:
-            Dictionary containing:
-            包含以下内容的字典：
-            - S: 2D directional spectrum S(f, theta) / 二维方向谱
-            - freqs: Frequency array / 频率数组
-            - dirs: Direction array / 方向数组
-            - Hs: Significant wave height / 有效波高
-            - Tp: Peak period / 峰值周期
-            - Dp: Dominant direction / 主波向
-            - DTp: Direction at peak period / 峰值周期方向
+            Dictionary containing directional spectrum results
         """
         try:
-            # Import pyDIWASP
+            # Import pyDIWASP components
             import sys
-            sys.path.insert(0, '/home/obsis/radar/mqtt_system/services')
-            from pydiwasp import dirspec
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from pydiwasp.private.wavenumber import wavenumber
+            from pydiwasp.private.diwasp_csd import diwasp_csd
+            from pydiwasp.private.DFTM import DFTM as dftm_func
+            from pydiwasp.private.smoothspec import smoothspec
+            from pydiwasp.interpspec import interpspec
 
             # Prepare data matrix [N x 3]
-            # 安全截齐：确保三个通道等长
             min_len = min(len(eta1), len(eta2), len(eta3))
             if len(eta1) != min_len or len(eta2) != min_len or len(eta3) != min_len:
                 logging.warning(f"DIWASP input length mismatch: eta1={len(eta1)}, eta2={len(eta2)}, eta3={len(eta3)}, truncating to {min_len}")
@@ -393,55 +396,111 @@ class DirectionalSpectrumAnalyzer:
                 eta2 = eta2[:min_len]
                 eta3 = eta3[:min_len]
             n_samples = min_len
-            data = np.column_stack([eta1, eta2, eta3])
 
-            # Instrument Data structure (ID)
-            # 仪器数据结构
-            ID = {
-                'data': data,
-                'layout': self.layout,
-                'datatypes': np.array(['elev', 'elev', 'elev']),  # surface elevation sensors
-                'depth': self.water_depth,
-                'fs': self.sample_rate
+            from scipy.signal import detrend as scipy_detrend
+            data = scipy_detrend(np.column_stack([eta1, eta2, eta3]), axis=0)
+            szd = 3
+
+            # FFT 参数
+            nfft = min(256, n_samples // 4)
+            nfft = max(64, int(2 ** np.floor(np.log2(nfft))))
+
+            # 计算互谱矩阵
+            xps = np.empty((szd, szd, nfft // 2), 'complex128')
+            for m in range(szd):
+                for n in range(szd):
+                    xpstmp, Ftmp = diwasp_csd(data[:, m], data[:, n],
+                                              nfft, self.sample_rate, flag=2)
+                    xps[m, n, :] = xpstmp[1:nfft // 2 + 1]
+            F = Ftmp[1:nfft // 2 + 1]
+            nf = nfft // 2
+
+            # 波数
+            wns = wavenumber(2 * np.pi * F,
+                             self.water_depth * np.ones(len(F)))
+
+            # 方向网格（DIWASP内部坐标: -π to π）
+            dres = self.direction_resolution
+            pidirs = np.linspace(-np.pi, np.pi - 2 * np.pi / dres, num=dres)
+
+            # ===== 自定义传递函数 =====
+            # R1: trm = 1 (垂直，纯高程)
+            # R2: trm = 1 + c·j·k·sin(θ + φ₂)
+            # R3: trm = 1 + c·j·k·sin(θ + φ₃)
+            # c = H·tan(α), H = R1平均测距, α = 倾斜角
+            tilt_rad = {
+                'R1': np.radians(self.tilt_angles_per_radar['R1']),
+                'R2': np.radians(self.tilt_angles_per_radar['R2']),
+                'R3': np.radians(self.tilt_angles_per_radar['R3']),
             }
+            azimuth_rad = {
+                'R1': np.radians(self.tilt_azimuths_per_radar['R1']),
+                'R2': np.radians(self.tilt_azimuths_per_radar['R2']),
+                'R3': np.radians(self.tilt_azimuths_per_radar['R3']),
+            }
+            # R1平均测距作为斜率系数中的H（在analyze()中已通过update_layout更新）
+            # 使用当前有效的水面距离
+            water_dist = self.array_height  # 由update_layout()动态更新
 
-            # Spectral Matrix structure (SM) - defines output grid
-            # 谱矩阵结构 - 定义输出网格
+            radar_keys = ['R1', 'R2', 'R3']
+            trm = np.empty((szd, nf, len(pidirs)), dtype='complex128')
+            kx = np.empty((szd, szd, nf, len(pidirs)))
+
+            for m_idx, key in enumerate(radar_keys):
+                alpha = tilt_rad[key]
+                phi = azimuth_rad[key]
+
+                if alpha > 0.001:  # 倾斜雷达
+                    slope_coeff = water_dist * np.tan(alpha)
+                    trm[m_idx, :, :] = (1.0 + slope_coeff * 1j
+                                        * wns[:, np.newaxis]
+                                        * np.sin(pidirs[np.newaxis, :] + phi))
+                else:  # R1 垂直
+                    trm[m_idx, :, :] = np.ones((nf, len(pidirs)))
+
+                for n_idx in range(szd):
+                    kx[m_idx, n_idx, :, :] = wns[:, np.newaxis] * (
+                        (self.layout[0, n_idx] - self.layout[0, m_idx]) * np.cos(pidirs)
+                        + (self.layout[1, n_idx] - self.layout[1, m_idx]) * np.sin(pidirs)
+                    )
+
+            # 自谱归一化
+            Ss = np.empty((szd, nf), dtype='complex128')
+            for m in range(szd):
+                tfn_max = np.max(np.abs(trm[m, :, :]), axis=1)
+                Ss[m, :] = xps[m, m, :] / (tfn_max * np.conj(tfn_max) + 1e-30)
+
+            # 频率选择
+            ffs = (F >= self.freq_range[0]) & (F <= self.freq_range[1])
+
+            logging.info(f"Running DFTM with custom TRM: nfft={nfft}, "
+                         f"slope_coeff={water_dist * np.tan(tilt_rad['R2']):.3f}m, "
+                         f"dres={dres}")
+
+            # DFTM 方向谱估算
+            S_raw = dftm_func(xps[:, :, ffs], trm[:, ffs, :],
+                              kx[:, :, ffs, :], Ss[:, ffs], pidirs, 100, 0)
+            S_raw = np.real(S_raw)
+            S_raw[np.isnan(S_raw) | (S_raw < 0)] = 0
+
+            # 插值到用户指定的频率/方向网格
+            SM1 = {
+                'freqs': F[ffs], 'dirs': pidirs, 'S': S_raw,
+                'funit': 'Hz', 'dunit': 'rad'
+            }
             freqs = np.linspace(self.freq_range[0], self.freq_range[1], 128)
             dirs = np.linspace(0, 360, self.direction_resolution + 1)[:-1]
             dirs_rad = np.radians(dirs)
-
-            SM = {
-                'freqs': freqs,
-                'dirs': dirs_rad,
-                'funit': 'Hz',
-                'dunit': 'rad',
-                'xaxisdir': self.xaxisdir  # x轴罗盘方向 = array_heading + 90
+            SM_target = {
+                'freqs': freqs, 'dirs': dirs_rad,
+                'funit': 'Hz', 'dunit': 'rad',
+                'xaxisdir': self.xaxisdir
             }
+            SMout = interpspec(SM1, SM_target, method='linear')
+            SMout = smoothspec(SMout, [[1, 0.5, 0.25], [1, 0.5, 0.25]])
 
-            # Estimation Parameters (EP)
-            # 估计参数
-            nfft = min(512, n_samples // 4)
-            nfft = int(2 ** np.floor(np.log2(nfft)))  # Round to power of 2
-
-            EP = {
-                'method': method,
-                'nfft': nfft,
-                'dres': self.direction_resolution,
-                'iter': 100,
-                'smooth': 'ON'
-            }
-
-            # Options
-            options = ['MESSAGE', 0, 'PLOTTYPE', 0]  # Suppress output and plotting
-
-            logging.info(f"Running DIWASP with method={method}, nfft={nfft}, dres={self.direction_resolution}")
-
-            # Run directional spectrum estimation
-            SMout, EPout = dirspec(ID, SM, EP, options)
-
-            if len(SMout) == 0:
-                logging.error("DIWASP returned empty result")
+            if SMout is None or len(SMout) == 0:
+                logging.error("DFTM returned empty result")
                 return self._fallback_analysis(eta1)
 
             # Extract results
@@ -497,15 +556,22 @@ class DirectionalSpectrumAnalyzer:
 
             # 180°模糊消除：3个同类型传感器无法区分来向和去向，
             # 如果新方向与上一次结果相差接近180°（±30°），翻转到一致的半圆
-            if DirectionalSpectrumAnalyzer._last_Dp is not None:
-                diff = (Dp - DirectionalSpectrumAnalyzer._last_Dp + 180) % 360 - 180
+            # 计量模式跳过：meter方向由analyze_window校正到参考方向，不做自动翻转
+            # 超时10分钟：若上次分析距今太久，海况可能已变，不做翻转
+            import time
+            now = time.time()
+            ambiguity_timeout = 600  # 10 minutes
+            if (mode != 'meter' and self._last_Dp is not None
+                    and (now - self._last_Dp_time) < ambiguity_timeout):
+                diff = (Dp - self._last_Dp + 180) % 360 - 180
                 if abs(abs(diff) - 180) < 30:
                     Dp_flipped = (Dp + 180) % 360
                     DTp = (DTp + 180) % 360
                     mean_dir = (mean_dir + 180) % 360
-                    logging.info(f"180° ambiguity resolved: {Dp:.1f}° -> {Dp_flipped:.1f}° (prev={DirectionalSpectrumAnalyzer._last_Dp:.1f}°)")
+                    logging.info(f"180° ambiguity resolved: {Dp:.1f}° -> {Dp_flipped:.1f}° (prev={self._last_Dp:.1f}°)")
                     Dp = Dp_flipped
-            DirectionalSpectrumAnalyzer._last_Dp = Dp
+            self._last_Dp = Dp
+            self._last_Dp_time = now
 
             results = {
                 'S': S.tolist(),  # 2D spectrum [freq x dir]
@@ -519,12 +585,12 @@ class DirectionalSpectrumAnalyzer:
                 'DTp': float(DTp),         # 峰值周期方向（罗盘来向，真北）
                 'mean_direction': float(mean_dir),  # 平均波向（罗盘来向，真北）
                 'directional_spread': float(dir_spread),
-                'method': method,
+                'method': 'DFTM-CustomTRM',
                 'success': True
             }
 
             logging.info(f"Directional analysis complete: Hs={Hs:.3f}m, Tp={Tp:.2f}s, "
-                         f"Dp={Dp:.1f}° (compass FROM, true north)")
+                         f"Dp={Dp:.1f}° (compass FROM, true north), method=DFTM-CustomTRM")
 
             return results
 
@@ -580,7 +646,8 @@ class DirectionalSpectrumAnalyzer:
 
     def analyze(self, eta1: np.ndarray, eta2: np.ndarray = None,
                eta3: np.ndarray = None, assumed_direction: float = 0.0,
-               method: str = 'EMEP', r1_mean_distance: float = None) -> Dict:
+               method: str = 'EMEP', r1_mean_distance: float = None,
+               mode: str = 'work') -> Dict:
         """
         Main analysis entry point.
         主分析入口。
@@ -628,7 +695,7 @@ class DirectionalSpectrumAnalyzer:
             eta3_use = eta3 * self.tilt_factors['R3']
 
         # Run directional spectrum analysis
-        results = self.compute_directional_spectrum(eta1_proc, eta2_use, eta3_use, method)
+        results = self.compute_directional_spectrum(eta1_proc, eta2_use, eta3_use, method, mode=mode)
 
         # Add metadata about data source
         results['data_source'] = {

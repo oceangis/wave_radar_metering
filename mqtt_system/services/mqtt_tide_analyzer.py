@@ -86,7 +86,7 @@ class TideAnalyzer:
         try:
             cursor = self.db_conn.cursor()
 
-            array_height = self.radar_config.get('array_height', 5.0)
+            array_height = self.radar_config.get('elevation_85', self.radar_config.get('array_height', 5.0))
 
             if hours:
                 start_time = datetime.now() - timedelta(hours=hours)
@@ -163,7 +163,7 @@ class TideAnalyzer:
 
             logging.debug(f"Water level observation: {observed_tide:.4f}m from {len(tide_levels)} samples")
 
-            radar1_distance = self.radar_config.get('array_height', 5.0) - observed_tide
+            radar1_distance = self.radar_config.get('elevation_85', self.radar_config.get('array_height', 5.0)) - observed_tide
 
             # 存储到数据库
             cursor = self.db_conn.cursor()
@@ -179,7 +179,7 @@ class TideAnalyzer:
             obs_time = datetime.now()
 
             cursor.execute(query, (obs_time, observed_tide, radar1_distance,
-                                  self.radar_config.get('array_height', 5.0)))
+                                  self.radar_config.get('elevation_85', self.radar_config.get('array_height', 5.0))))
             self.db_conn.commit()
             cursor.close()
 
@@ -192,10 +192,13 @@ class TideAnalyzer:
     def publish_tide_observation(self, obs_time: datetime, tide_level: float):
         """发布潮位观测值到MQTT"""
         try:
+            surveyed = self.radar_config.get('elevation_85_surveyed', False)
             message = json.dumps({
                 'time': obs_time.isoformat(),
                 'tide_level': tide_level,
-                'array_height': self.radar_config.get('array_height', 5.0)
+                'elevation_85': self.radar_config.get('elevation_85', self.radar_config.get('array_height', 5.0)),
+                'elevation_85_surveyed': surveyed,
+                'tide_quality': 'precise' if surveyed else 'estimated'
             })
 
             self.mqtt_client.publish('tide/observation', message, qos=0)

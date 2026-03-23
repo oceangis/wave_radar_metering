@@ -341,58 +341,64 @@ class SerialConsole:
 
             if wave:
                 r = wave.get('results', {})
+                error_msg = wave.get('metadata', {}).get('error')
 
-                def _f(key, dec=3):
-                    v = r.get(key)
-                    return round(v, dec) if v is not None else None
+                if error_msg or not r:
+                    # analyzer 返回了错误结果（数据不足等）
+                    self._send_json({"type": "error", "cmd": mode,
+                                     "message": error_msg or "分析返回空结果"})
+                else:
+                    def _f(key, dec=3):
+                        v = r.get(key)
+                        return round(v, dec) if v is not None else None
 
-                self._send_json({
-                    "type":   "wave",
-                    "mode":   mode.lower(),
-                    "window": window,
-                    "time":   datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                    # ---- 频域参数 ----
-                    "Hm0":            _f('Hm0'),
-                    "Tp":             _f('Tp', 2),
-                    "Tz":             _f('Tz', 2),
-                    "Te":             _f('Te', 2),
-                    "Tm01":           _f('Tm01', 2),
-                    "peak_frequency": _f('peak_frequency', 4),
-                    "fm":             _f('fm', 4),
-                    "fz":             _f('fz', 4),
-                    "fe":             _f('fe', 4),
-                    "df":             _f('df', 4),
-                    "f_min":          _f('f_min', 4),
-                    "f_max":          _f('f_max', 4),
-                    "Nf":             r.get('Nf'),
-                    "epsilon_0":      _f('epsilon_0', 4),
-                    # ---- 谱矩 ----
-                    "m_minus1": _f('m_minus1', 6),
-                    "m0":       _f('m0', 6),
-                    "m1":       _f('m1', 6),
-                    "m2":       _f('m2', 6),
-                    "m4":       _f('m4', 6),
-                    # ---- 时域参数（零交叉法）----
-                    "Hmax":  _f('Hmax'),
-                    "Hs":    _f('Hs'),
-                    "H1_10": _f('H1_10'),
-                    "Hmean": _f('Hmean'),
-                    "Tmax":  _f('Tmax', 2),
-                    "T1_10": _f('T1_10', 2),
-                    "Ts":    _f('Ts', 2),
-                    "Tmean": _f('Tmean', 2),
-                    "wave_count": r.get('wave_count', 0),
-                    # ---- 方向参数 ----
-                    "direction":          _f('wave_direction', 1),
-                    "mean_direction":     _f('mean_direction', 1),
-                    "directional_spread": _f('directional_spread', 1),
-                    "direction_at_peak":  _f('direction_at_peak', 1),
-                    # ---- 各雷达波高 ----
-                    "Hm0_r1": _f('Hm0_radar1'),
-                    "Hm0_r2": _f('Hm0_radar2'),
-                    "Hm0_r3": _f('Hm0_radar3'),
-                    "radar_count": r.get('radar_count', 0),
-                })
+                    self._send_json({
+                        "type":   "wave",
+                        "mode":   mode.lower(),
+                        "window": window,
+                        "time":   datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        # ---- 频域参数 ----
+                        "Hm0":            _f('Hm0'),
+                        "Tp":             _f('Tp', 2),
+                        "Tz":             _f('Tz', 2),
+                        "Te":             _f('Te', 2),
+                        "Tm01":           _f('Tm01', 2),
+                        "peak_frequency": _f('peak_frequency', 4),
+                        "fm":             _f('fm', 4),
+                        "fz":             _f('fz', 4),
+                        "fe":             _f('fe', 4),
+                        "df":             _f('df', 4),
+                        "f_min":          _f('f_min', 4),
+                        "f_max":          _f('f_max', 4),
+                        "Nf":             r.get('Nf'),
+                        "epsilon_0":      _f('epsilon_0', 4),
+                        # ---- 谱矩 ----
+                        "m_minus1": _f('m_minus1', 6),
+                        "m0":       _f('m0', 6),
+                        "m1":       _f('m1', 6),
+                        "m2":       _f('m2', 6),
+                        "m4":       _f('m4', 6),
+                        # ---- 时域参数（零交叉法）----
+                        "Hmax":  _f('Hmax'),
+                        "Hs":    _f('Hs'),
+                        "H1_10": _f('H1_10'),
+                        "Hmean": _f('Hmean'),
+                        "Tmax":  _f('Tmax', 2),
+                        "T1_10": _f('T1_10', 2),
+                        "Ts":    _f('Ts', 2),
+                        "Tmean": _f('Tmean', 2),
+                        "wave_count": r.get('wave_count', 0),
+                        # ---- 方向参数 ----
+                        "direction":          _f('wave_direction', 1),
+                        "mean_direction":     _f('mean_direction', 1),
+                        "directional_spread": _f('directional_spread', 1),
+                        "direction_at_peak":  _f('direction_at_peak', 1),
+                        # ---- 各雷达波高 ----
+                        "Hm0_r1": _f('Hm0_radar1'),
+                        "Hm0_r2": _f('Hm0_radar2'),
+                        "Hm0_r3": _f('Hm0_radar3'),
+                        "radar_count": r.get('radar_count', 0),
+                    })
             else:
                 self._send_json({"type": "error", "cmd": mode, "message": "未收到分析结果"})
         else:
@@ -420,7 +426,8 @@ class SerialConsole:
             },
             'radar': {
                 'array_heading': self.config['radar'].get('array_heading', 0.0),
-                'array_height':  self.config['radar'].get('array_height', 5.0),
+                'elevation_85':  self.config['radar'].get('elevation_85', self.config['radar'].get('array_height', 5.0)),
+                'elevation_85_surveyed': self.config['radar'].get('elevation_85_surveyed', False),
             },
             'collection': {
                 'sample_rate': self.config.get('collection', {}).get('sample_rate', 6),
@@ -437,7 +444,8 @@ class SerialConsole:
         c = self.config.get('collection', {})
         self._send_json({
             "type":         "config",
-            "height":       r.get('array_height', 5.0),
+            "elevation_85": r.get('elevation_85', r.get('array_height', 5.0)),
+            "elevation_85_surveyed": r.get('elevation_85_surveyed', False),
             "heading":      r.get('array_heading', 0.0),
             "sample_rate":  c.get('sample_rate', 6),
             "meter_window": a.get('meter_window', 300),
@@ -452,7 +460,7 @@ class SerialConsole:
         updated = []
 
         validators = {
-            'height':       (0.5,  200.0, float, 'radar',    'array_height',      "height 须在 0.5 ~ 200.0 m 范围内"),
+            'elevation_85': (0.0,  200.0, float, 'radar',    'elevation_85',      "elevation_85 须在 0 ~ 200.0 m 范围内"),
             'heading':      (0.0,  359.9, float, 'radar',    'array_heading',     "heading 须在 0.0 ~ 359.9 deg 范围内"),
             'meter_window': (60,   3600,  int,   'analysis', 'meter_window',      "meter_window 须在 60 ~ 3600 s 范围内"),
             'work_window':  (60,   7200,  int,   'analysis', 'work_window',       "work_window 须在 60 ~ 7200 s 范围内"),
@@ -514,7 +522,11 @@ class SerialConsole:
                 self._pending_deadline = None
 
             logging.info(f"[Scheduler] {mode} countdown finished, running analysis")
-            self._run_analysis(mode)
+            try:
+                self._run_analysis(mode)
+            except Exception as e:
+                logging.error(f"[Scheduler] _run_analysis exception: {e}", exc_info=True)
+                self.stream_pause.clear()
 
             # 连续模式：分析完成后重新调度
             if self._repeat and not self._stop_event.is_set():

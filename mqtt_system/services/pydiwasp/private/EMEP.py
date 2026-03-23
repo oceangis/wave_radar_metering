@@ -45,8 +45,9 @@ def EMEP(xps, trm, kx, Ss, pidirs, miter, displ):
 
     S = np.zeros((freqs, ddirs))
 
-    phi = np.zeros((szd+2, freqs))
-    H = np.zeros((ddirs, szd+2, freqs))
+    max_entries = szd * (szd + 1)  # 足够容纳所有互谱对的实部+虚部
+    phi = np.zeros((max_entries, freqs))
+    H = np.zeros((ddirs, max_entries, freqs))
     for ff in range(freqs):
         index = 0
 

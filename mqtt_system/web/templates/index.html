@@ -31,16 +31,21 @@
                 <span>WebSocket: <strong id="wsStatus">连接中...</strong></span>
             </div>
             <div class="status-item">
-                <span>系统时间: <strong id="systemTime">--</strong></span>
+                <div class="status-indicator offline" id="radarIndicator"></div>
+                <span>雷达: <strong id="radarStatus">未知</strong></span>
+            </div>
+            <div class="status-item">
+                <div class="status-indicator offline" id="elevationIndicator"></div>
+                <span>85高程: <strong id="elevationStatus">未测量</strong></span>
             </div>
             <div class="status-item">
                 <span>采样率: <strong id="sampleRate">-- Hz</strong></span>
             </div>
             <div class="status-item">
-                <span>波浪分析时间: <strong id="analysisTime" style="color: #2196F3;">--</strong></span>
+                <span>分析: <strong id="analysisTime" style="color: #2196F3;">--</strong></span>
             </div>
             <div class="status-item">
-                <span>最后更新: <strong id="lastUpdate">--</strong></span>
+                <span>更新: <strong id="lastUpdate">--</strong></span>
             </div>
         </div>
 
@@ -222,7 +227,7 @@
                         </div>
                         <div class="param-list" style="font-size: 0.9em; margin-top: 8px;">
                             <div class="param-item">
-                                <span class="param-label">阵列高度</span>
+                                <span class="param-label">85高程</span>
                                 <span class="param-value" id="arrayHeightDisplay">-- m</span>
                             </div>
                         </div>
@@ -1808,19 +1813,31 @@
                 const data = await response.json();
 
                 const arrayHeading = data.radar?.array_heading ?? 0;
-                const arrayHeight = data.radar?.array_height ?? 5;
+                const elevation85 = data.radar?.elevation_85 ?? data.radar?.array_height ?? 5;
+                const surveyed = data.radar?.elevation_85_surveyed ?? false;
 
                 // 更新显示（用于系统配置页面）
                 const currentHeading = document.getElementById('currentArrayHeading');
-                const currentHeight = document.getElementById('currentArrayHeight');
                 if (currentHeading) currentHeading.textContent = arrayHeading.toFixed(1);
-                if (currentHeight) currentHeight.textContent = arrayHeight.toFixed(2);
 
                 // 更新输入框（用于系统配置页面）
                 const headingInput = document.getElementById('arrayHeading');
-                const heightInput = document.getElementById('arrayHeight');
                 if (headingInput) headingInput.value = arrayHeading.toFixed(1);
-                if (heightInput) heightInput.value = arrayHeight.toFixed(2);
+
+                // 更新85高程状态指示灯
+                const elevInd = document.getElementById('elevationIndicator');
+                const elevStatus = document.getElementById('elevationStatus');
+                if (elevInd && elevStatus) {
+                    if (surveyed) {
+                        elevInd.classList.add('online');
+                        elevInd.classList.remove('offline');
+                        elevStatus.textContent = elevation85.toFixed(3) + 'm';
+                    } else {
+                        elevInd.classList.add('offline');
+                        elevInd.classList.remove('online');
+                        elevStatus.textContent = '未测量';
+                    }
+                }
             } catch (error) {
                 console.error('加载阵列配置失败:', error);
             }
@@ -2244,6 +2261,8 @@
 
                 // 更新雷达状态
                 if (collector.radars && Array.isArray(collector.radars)) {
+                    let allOnline = true;
+                    let onlineCount = 0;
                     collector.radars.forEach((radar) => {
                         const radarElem = document.getElementById(`radar${radar.id}`);
                         const statusElem = document.getElementById(`radar${radar.id}Status`);
@@ -2253,13 +2272,33 @@
                                 radarElem.classList.add('online');
                                 radarElem.classList.remove('offline');
                                 statusElem.textContent = '在线';
+                                onlineCount++;
                             } else {
                                 radarElem.classList.add('offline');
                                 radarElem.classList.remove('online');
                                 statusElem.textContent = '离线';
+                                allOnline = false;
                             }
                         }
                     });
+                    // 更新状态栏雷达总指示灯
+                    const radarInd = document.getElementById('radarIndicator');
+                    const radarSt = document.getElementById('radarStatus');
+                    if (radarInd && radarSt) {
+                        if (allOnline && onlineCount > 0) {
+                            radarInd.classList.add('online');
+                            radarInd.classList.remove('offline', 'warning');
+                            radarSt.textContent = onlineCount + '/3 正常';
+                        } else if (onlineCount > 0) {
+                            radarInd.classList.add('warning');
+                            radarInd.classList.remove('online', 'offline');
+                            radarSt.textContent = onlineCount + '/3 在线';
+                        } else {
+                            radarInd.classList.add('offline');
+                            radarInd.classList.remove('online', 'warning');
+                            radarSt.textContent = '离线';
+                        }
+                    }
                 }
             }
 

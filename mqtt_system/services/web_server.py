@@ -717,7 +717,10 @@ class WebService:
                     },
                     'radar': {
                         'array_heading': self.config['radar'].get('array_heading', 0.0),
-                        'array_height': self.config['radar'].get('array_height', 5.0)
+                        'array_height': self.config['radar'].get('array_height', 5.0),
+                        'elevation_85': self.config['radar'].get('elevation_85',
+                                        self.config['radar'].get('array_height', 5.0)),
+                        'elevation_85_surveyed': self.config['radar'].get('elevation_85_surveyed', False)
                     }
                 })
 
@@ -793,6 +796,18 @@ class WebService:
                         self.config['radar']['array_heading'] = heading
                         updated = True
                         logging.info(f"Updated array_heading to {heading}")
+                    if 'elevation_85' in analysis_config:
+                        elev = float(analysis_config['elevation_85'])
+                        if not (0 <= elev <= 200):
+                            return jsonify({'success': False, 'error': 'elevation_85 must be in [0, 200]'}), 400
+                        self.config['radar']['elevation_85'] = elev
+                        self.config['radar']['array_height'] = elev  # 兼容旧代码
+                        updated = True
+                        logging.info(f"Updated elevation_85 to {elev}")
+                    if 'elevation_85_surveyed' in analysis_config:
+                        self.config['radar']['elevation_85_surveyed'] = bool(analysis_config['elevation_85_surveyed'])
+                        updated = True
+                        logging.info(f"Updated elevation_85_surveyed to {self.config['radar']['elevation_85_surveyed']}")
                     if 'array_height' in analysis_config:
                         height = float(analysis_config['array_height'])
                         if not (0.5 <= height <= 200):

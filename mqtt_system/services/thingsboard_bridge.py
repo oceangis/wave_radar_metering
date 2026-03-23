@@ -170,8 +170,16 @@ class ThingsBoardBridge:
             logging.warning("ThingsBoard not connected, skipping")
             return
 
+        # 跳过错误结果（数据不足等）
+        if data.get('metadata', {}).get('error'):
+            logging.info(f"Skipping error result: {data['metadata']['error']}")
+            return
+
         try:
             results = data.get('results', {})
+            if not results:
+                logging.info("Skipping empty results")
+                return
 
             values = {}
 
